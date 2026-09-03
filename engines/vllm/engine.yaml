@@ -64,4 +64,5 @@ runtime:
     max_num_seqs: --max-num-seqs
 
 capabilities: {mods: true, pr_mods: true, solo: true, cluster: true, mesh: true}
-verified: []
+verified:
+  - {nodes: 1, tp: 1, model: Qwen/Qwen2.5-0.5B-Instruct, date: "2026-09-03", notes: "scripts/smoke-test.sh on GB10 (driver 580.159.03), image 0.1.0 digest 569f436f, vllm 0.28.1rc1.dev345+g4cc0cb6f7 prebuilt wheel; ready in 170s, chat completion ok"}
