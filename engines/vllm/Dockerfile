@@ -194,7 +194,8 @@ COPY patches/ /tmp/vllm-patches/
 RUN set -eu; \
     git config --global user.email builder@spark-pulse.local; \
     git config --global user.name "spark-pulse-engine"; \
-    for p in $(ls /tmp/vllm-patches/*.patch 2>/dev/null | grep -v flashinfer_cache.patch || true); do \
+    for p in /tmp/vllm-patches/*.patch; do \
+        [ -e "$p" ] || continue; case "$p" in *flashinfer_cache.patch) continue;; esac; \
         if git apply --reverse --check "$p" >/dev/null 2>&1; then echo "already applied: $p"; \
         else echo "applying: $p"; git apply --3way "$p"; fi; \
     done; \
@@ -315,7 +316,7 @@ RUN --mount=type=bind,from=flashinfer_wheels,target=/workspace/flashinfer-wheels
     for f in flashinfer-wheels/.flashinfer-commit vllm-wheels/.vllm-commit vllm-wheels/.deepgemm-commit; do \
         n=$(basename "$f"); if [ -f "/workspace/$f" ]; then cp "/workspace/$f" "/workspace/$n"; else echo prebuilt > "/workspace/$n"; fi; \
     done; \
-    for d in flashinfer vllm; do [ -f "/workspace/$d-wheels/manifest.json" ] && cp "/workspace/$d-wheels/manifest.json" "/workspace/.$d-wheels-manifest.json" || true; done
+    for d in flashinfer vllm; do if [ -f "/workspace/$d-wheels/manifest.json" ]; then cp "/workspace/$d-wheels/manifest.json" "/workspace/.$d-wheels-manifest.json"; fi; done
 
 # Optional B12X kernel package (variant b12x). Installed without deps so the
 # image-wide cutlass-dsl pin wins; kernels are JIT-compiled on first use.
