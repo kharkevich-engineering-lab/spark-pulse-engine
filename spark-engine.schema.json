@@ -1,0 +1,346 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/kharkevich-engineering-lab/spark-pulse-engine/spark-engine.schema.json",
+  "title": "Spark Pulse Engine",
+  "description": "Metadata for one engine image consumed by the Spark Pulse engine registry.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "engine",
+    "variant",
+    "image",
+    "version",
+    "runtime",
+    "capabilities",
+    "sources"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1"
+      ]
+    },
+    "engine": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Engine plugin name in spark-pulse (vllm, sglang)."
+    },
+    "variant": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Image variant (default, b12x, mxfp4)."
+    },
+    "description": {
+      "type": "string"
+    },
+    "image": {
+      "type": "string",
+      "description": "Image repository without tag."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semver of this image definition; used as the tag."
+    },
+    "legacy_tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Local tag names v1 recipes use in `container:` (vllm-node, vllm-node-b12x) that map to this image."
+    },
+    "arch": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [
+        "linux/arm64"
+      ]
+    },
+    "gpu_arch": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [
+        "12.1a"
+      ]
+    },
+    "sources": {
+      "type": "object",
+      "description": "Every pinned input. Keys are free-form; values are either a git pin, a version pin or an image pin.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "index": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "build_args": {
+      "type": "object",
+      "description": "Extra --build-arg values passed verbatim. Sources are mapped to build args by scripts/build_args.py.",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "serve",
+        "readiness",
+        "ports"
+      ],
+      "properties": {
+        "python": {
+          "type": "string"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "site_packages": {
+          "type": "string"
+        },
+        "serve": {
+          "type": "string",
+          "description": "Serve command prefix, e.g. `vllm serve` or `python3 -m sglang.launch_server`."
+        },
+        "model_arg": {
+          "type": "string",
+          "description": "How the model is passed: `positional` or a flag such as `--model-path`."
+        },
+        "readiness": {
+          "type": "string",
+          "description": "HTTP path that returns 200 when the server is ready."
+        },
+        "models_endpoint": {
+          "type": "string"
+        },
+        "metrics": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ports": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "api"
+          ],
+          "properties": {
+            "api": {
+              "type": "integer"
+            },
+            "rendezvous": {
+              "type": "integer",
+              "description": "Multi-node init port (torch master port, sglang dist-init)."
+            }
+          }
+        },
+        "cache_mounts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Host paths mounted to the same path under /root."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "container": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "privileged": {
+              "type": "boolean"
+            },
+            "ipc_host": {
+              "type": "boolean"
+            },
+            "network_host": {
+              "type": "boolean"
+            },
+            "shm_size_gb": {
+              "type": "integer"
+            },
+            "devices": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "cap_add": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "ulimits": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "keepalive": {
+              "type": "string",
+              "description": "Idle command, e.g. `sleep infinity`."
+            }
+          }
+        },
+        "multi_node": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "style"
+          ],
+          "properties": {
+            "style": {
+              "type": "string",
+              "enum": [
+                "torchrun",
+                "sglang",
+                "none"
+              ]
+            },
+            "extra_args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Args appended only for multi-node launches."
+            }
+          }
+        },
+        "param_flags": {
+          "type": "object",
+          "description": "Engine-neutral recipe params mapped to this engine's CLI flags.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mods": {
+          "type": "boolean"
+        },
+        "pr_mods": {
+          "type": "boolean"
+        },
+        "solo": {
+          "type": "boolean"
+        },
+        "cluster": {
+          "type": "boolean"
+        },
+        "mesh": {
+          "type": "boolean"
+        }
+      }
+    },
+    "verified": {
+      "type": "array",
+      "description": "Hardware evidence for this image.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "nodes",
+          "model",
+          "date"
+        ],
+        "properties": {
+          "nodes": {
+            "type": "integer"
+          },
+          "tp": {
+            "type": "integer"
+          },
+          "pp": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Where to build from, relative to the repo root. Defaults to the engine.yaml directory and its Dockerfile.",
+      "properties": {
+        "context": {
+          "type": "string"
+        },
+        "dockerfile": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      }
+    },
+    "wheels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "release": {
+            "type": "string",
+            "description": "owner/repo@tag of a GitHub release holding *.whl assets"
+          }
+        }
+      },
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "source",
+            "prebuilt"
+          ]
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "description": "Where wheels come from. `source` builds them in the Dockerfile; `prebuilt` downloads the named releases into the wheel build contexts and skips the builder stages."
+    }
+  }
+}

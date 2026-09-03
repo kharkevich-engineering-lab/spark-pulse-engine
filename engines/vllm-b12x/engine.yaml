@@ -1,0 +1,65 @@
+schema_version: "1"
+engine: vllm
+variant: b12x
+description: vLLM from the local-inference-lab fork with B12X kernels (DeepSeek V4 and other MLA models on Spark).
+image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/vllm-b12x
+version: 0.1.0
+legacy_tags: [vllm-node-b12x]
+arch: [linux/arm64]
+gpu_arch: ["12.1a"]
+build: {context: engines/vllm, dockerfile: engines/vllm/Dockerfile}
+
+sources:
+  base: {image: nvidia/cuda:13.0.2-devel-ubuntu24.04}
+  vllm: {repo: https://github.com/local-inference-lab/vllm.git, ref: 47ccf6c57d92f03630ebcbad3809450545825488}
+  flashinfer: {repo: https://github.com/flashinfer-ai/flashinfer.git, ref: 03d8b2cd33459b5dc66c6187a2b47e02f83a2fe3}
+  nccl: {repo: https://github.com/NVIDIA/nccl.git, ref: fd168324a3dc0c9080fd4881b6c7f4bb252a95a2}
+  deepgemm: {repo: https://github.com/deepseek-ai/DeepGEMM.git, ref: a6b593d2826719dcf4892609af7b84ee23aaf32a}
+  b12x: {repo: https://github.com/lukealonso/b12x.git, ref: 694e7650f0ea96997ee0d056e39e5764ddd74d5c}
+  torch: {version: "2.13.0", index: https://download.pytorch.org/whl/cu130}
+  torchvision: {version: "0.28.0"}
+  torchaudio: {version: "2.11.0"}
+  cutlass_dsl: {version: "4.7.0"}
+
+wheels:
+  mode: source   # no prebuilt wheels exist for the B12X fork
+
+build_args:
+  TORCH_CUDA_ARCH_LIST: 12.1a
+  VLLM_PRESERVE_SM12X_TARGET: 1
+  VLLM_PATCH_B12X_C128A_ALIGNMENT: 1
+
+runtime:
+  python: "3.12"
+  workdir: /workspace/vllm
+  site_packages: /usr/local/lib/python3.12/dist-packages
+  serve: vllm serve
+  model_arg: positional
+  readiness: /v1/models
+  models_endpoint: /v1/models
+  metrics: /metrics
+  ports: {api: 8000, rendezvous: 29501}
+  cache_mounts: [~/.cache/huggingface, ~/.cache/vllm, ~/.cache/flashinfer, ~/.triton, ~/.tilelang]
+  env:
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    NCCL_IGNORE_CPU_AFFINITY: "1"
+  container:
+    privileged: true
+    ipc_host: true
+    network_host: true
+    ulimits: {nofile: "1048576:1048576"}
+    keepalive: sleep infinity
+  multi_node:
+    style: torchrun
+  param_flags:
+    port: --port
+    host: --host
+    tensor_parallel: --tensor-parallel-size
+    pipeline_parallel: --pipeline-parallel-size
+    gpu_memory_utilization: --gpu-memory-utilization
+    max_model_len: --max-model-len
+    max_num_batched_tokens: --max-num-batched-tokens
+    max_num_seqs: --max-num-seqs
+
+capabilities: {mods: true, pr_mods: true, solo: true, cluster: true, mesh: false}
+verified: []

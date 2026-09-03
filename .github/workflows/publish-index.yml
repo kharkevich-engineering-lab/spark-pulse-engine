@@ -1,0 +1,65 @@
+name: publish-index
+
+# Regenerates index.yaml and publishes it as an OCI artifact at
+#   ghcr.io/<owner>/spark-pulse-engine/index:latest  (and :<sha>)
+# Spark Pulse configures that reference as an engine index source.
+# Runs after every successful build workflow so digests are current, and on
+# demand.
+
+on:
+  workflow_run:
+    workflows: [build-vllm, build-sglang]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: Collect digests from the latest build runs
+        run: |
+          set -eu
+          mkdir -p digests
+          for wf in build-vllm.yml build-sglang.yml; do
+            run=$(gh run list --workflow "$wf" --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId' || true)
+            [ -n "$run" ] && gh run download "$run" --dir digests --pattern 'digest-*' || true
+          done
+          python3 - <<'EOF'
+          import json, pathlib
+          merged = {}
+          for p in pathlib.Path("digests").rglob("*.json"):
+              merged.update(json.loads(p.read_text()))
+          pathlib.Path("digests.json").write_text(json.dumps(merged, indent=2))
+          print(merged)
+          EOF
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate index.yaml
+        run: python3 scripts/inventory.py --digests digests.json && cat index.yaml
+      - uses: oras-project/setup-oras@v1
+      - name: Push index as OCI artifact
+        run: |
+          set -eu
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+          REF=ghcr.io/${{ github.repository }}/index
+          oras push "$REF:latest,${{ github.sha }}" \
+            --artifact-type application/vnd.spark-pulse.engine-index.v1+yaml \
+            --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
+            index.yaml:application/vnd.spark-pulse.engine-index.v1+yaml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: index
+          path: index.yaml

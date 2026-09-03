@@ -1,0 +1,7 @@
+The files in this directory were copied from
+https://github.com/eugr/spark-vllm-docker (MIT License, Copyright (c) 2026
+Eugene Rakhmatulin) at commit 68e1b4c3f0986767b5e7531a18f62ae9d7668183 and
+are maintained here as this repository's own patch queue against the pinned
+vLLM and FlashInfer refs. Each patch is source-aware: it inspects the checkout
+and is a no-op when the fix is already present upstream. Remove a patch once
+the pinned ref contains the upstream fix.

@@ -1,0 +1,12 @@
+name: free-disk
+description: Remove preinstalled toolchains the build does not need so the CUDA image and wheel builds fit on a hosted runner.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        df -h / | tail -1
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/lib/jvm || true
+        sudo docker image prune -af >/dev/null 2>&1 || true
+        sudo apt-get clean || true
+        df -h / | tail -1
