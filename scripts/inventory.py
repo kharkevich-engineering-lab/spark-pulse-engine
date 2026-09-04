@@ -46,12 +46,20 @@ def main() -> int:
             "tag": tag,
             "ref": f'{engine["image"]}@{digest}' if digest else tag,
             "digest": digest,
+            # An entry with no digest was never published. Advertising it
+            # anyway makes a consumer pull an image that does not exist and
+            # get a 403, so say so rather than let them find out.
+            "available": bool(digest) if digests else True,
             "legacy_tags": list(engine.get("legacy_tags", [])),
             "description": engine.get("description", ""),
             "capabilities": dict(engine.get("capabilities", {})),
             "spec": copy.deepcopy(engine),
         }
         entries.append(entry)
+
+    unavailable = [e["id"] for e in entries if not e["available"]]
+    if unavailable:
+        print(f"note: not published, marked unavailable: {', '.join(unavailable)}")
 
     index = {
         "apiVersion": "spark-pulse.io/v1",

@@ -16,7 +16,6 @@ on:
 permissions:
   contents: read
   packages: write
-  actions: read
 
 jobs:
   publish:
@@ -28,24 +27,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pyyaml
-      - name: Collect digests from the latest build runs
-        run: |
-          set -eu
-          mkdir -p digests
-          for wf in build-vllm.yml build-sglang.yml; do
-            run=$(gh run list --workflow "$wf" --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId' || true)
-            [ -n "$run" ] && gh run download "$run" --dir digests --pattern 'digest-*' || true
-          done
-          python3 - <<'EOF'
-          import json, pathlib
-          merged = {}
-          for p in pathlib.Path("digests").rglob("*.json"):
-              merged.update(json.loads(p.read_text()))
-          pathlib.Path("digests.json").write_text(json.dumps(merged, indent=2))
-          print(merged)
-          EOF
+      # The registry is the authority on what is published, and unlike a build
+      # run's artifacts it never goes stale. Collecting digests from the latest
+      # run of each build workflow lost every engine that run did not build, so
+      # publishing one variant marked the others unpublished.
+      - name: Resolve published digests from the registry
+        run: python3 scripts/resolve_digests.py --out digests.json && cat digests.json
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Generate index.yaml
         run: python3 scripts/inventory.py --digests digests.json && cat index.yaml
       - uses: oras-project/setup-oras@v1
