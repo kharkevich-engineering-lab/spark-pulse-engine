@@ -102,9 +102,21 @@ SGLang runtime contract follows the findings in
 
 ## Availability
 
-`index.yaml` carries `available` per engine. It is false when the publish
-workflow found no digest for that image, meaning it has never been built and
-pushed. `vllm-b12x` is in that state: it is a from-source build of the
-local-inference-lab fork, it has not been built, and it has never been run on
-hardware. Consumers should not offer an unavailable engine, because pulling it
-returns a 403 rather than an image.
+`index.yaml` carries `available` per engine. It is false when the registry
+serves no digest for that image, meaning it has never been published.
+`publish-index` asks the registry rather than reading build artifacts, so the
+answer cannot go stale and publishing one variant cannot mark another
+unpublished. Consumers should not offer an unavailable engine, because pulling
+it returns a 403 rather than an image.
+
+`vllm-b12x` has now been built and run: the from-source build completes and the
+image serves on a GB10 — see `verified` in its `engine.yaml`. That was a local
+build on the Spark, because the source path is far too slow to iterate on a
+hosted runner; it stays `available: false` until CI publishes an image from the
+same pins.
+
+**Building the source path takes real time.** On a GB10 (20 cores) FlashInfer
+is about 63 minutes and the vLLM wheel a similar order; on GitHub's 4-core arm64
+runners expect several hours per stage, against a 6-hour job cap. The
+`prebuilt` wheel mode exists precisely to avoid this, and it is why
+`engines/vllm` finishes in under an hour.
