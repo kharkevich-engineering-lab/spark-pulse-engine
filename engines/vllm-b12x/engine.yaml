@@ -61,5 +61,9 @@ runtime:
     max_num_batched_tokens: --max-num-batched-tokens
     max_num_seqs: --max-num-seqs
 
-capabilities: {mods: true, pr_mods: true, solo: true, cluster: true, mesh: false}
+# Same engine as engines/vllm, so the same capabilities: these describe what
+# the control plane may do with a vLLM image, and the B12X kernels do not take
+# anything away. `verified` is what records that this variant has not yet been
+# run on hardware.
+capabilities: {mods: true, pr_mods: true, solo: true, cluster: true, mesh: true}
 verified: []

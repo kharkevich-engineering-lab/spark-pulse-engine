@@ -29,6 +29,11 @@ on:
         type: boolean
         default: true
 
+# A push builds the variants its own changes reach; see the plan job. The
+# weekly run refreshes engines/vllm only, because that variant tracks daily
+# prebuilt wheels and finishes in under an hour, while a source-mode variant
+# would spend hours rebuilding wheels nothing asked for.
+
 env:
   REGISTRY: ghcr.io
 
@@ -41,46 +46,93 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
+      any: ${{ steps.m.outputs.any }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install pyyaml
+      # Which variants a push touches. engines/vllm holds the Dockerfile and
+      # the patch queue that *both* variants build from, so a change there
+      # reaches both; engines/vllm/engine.yaml pins only the default variant.
+      - id: variants
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -eu
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            CHANGED=$(git ls-files)
+          else
+            CHANGED=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          fi
+          echo "changed files:"; echo "$CHANGED" | sed 's/^/  /'
+          SHARED=$(echo "$CHANGED" | grep -E '^(engines/vllm/(Dockerfile|patches/)|\.github/workflows/build-vllm\.yml|scripts/(build_args|fetch_wheels)\.py)' || true)
+          OUT=""
+          if [ -n "$SHARED" ] || echo "$CHANGED" | grep -q '^engines/vllm/engine\.yaml$'; then
+            OUT="engines/vllm"
+          fi
+          if [ -n "$SHARED" ] || echo "$CHANGED" | grep -q '^engines/vllm-b12x/'; then
+            OUT="$OUT engines/vllm-b12x"
+          fi
+          echo "variants=$(echo $OUT)" >> "$GITHUB_OUTPUT"
       - id: m
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VARIANTS: ${{ github.event.inputs.variants || 'engines/vllm' }}
+          VARIANTS: ${{ github.event_name == 'push' && steps.variants.outputs.variants || github.event.inputs.variants || 'engines/vllm' }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import hashlib, json, os, pathlib, subprocess, yaml
+
+          # What a source build actually consumes: the Dockerfile and the patch
+          # queue. engine.yaml is deliberately excluded — every value in it that
+          # reaches the build is already in the key by name, so hashing it would
+          # throw away hours of wheels for a description or a `verified` entry.
+          h = hashlib.sha256()
+          for p in [pathlib.Path("engines/vllm/Dockerfile")] + sorted(pathlib.Path("engines/vllm/patches").rglob("*")):
+              if p.is_file():
+                  h.update(p.name.encode())
+                  h.update(p.read_bytes())
+          ctx = h.hexdigest()[:12]
+
+          # Build args that change the wheels but appear in no ref: the b12x
+          # patch gates are exactly this, and leaving them out let two variants
+          # that differed only by a flag share a cache entry.
+          VOLATILE = {"BUILD_DATE", "GIT_SHA", "ENGINE_VERSION"}
+
           items = []
           for d in os.environ["VARIANTS"].split():
               y = f"{d}/engine.yaml"
               get = lambda k: subprocess.check_output(["python3", "scripts/build_args.py", y, "--get", k], text=True).strip()
               args = json.loads(subprocess.check_output(["python3", "scripts/build_args.py", y, "--json"], text=True))
-              h = hashlib.sha256()
-              for p in sorted(pathlib.Path("engines/vllm").rglob("*")):
-                  if p.is_file():
-                      h.update(p.read_bytes())
+              stable = {k: v for k, v in sorted(args.items()) if k not in VOLATILE}
+              argsig = hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()[:12]
               mode = (yaml.safe_load(open(y)).get("wheels") or {}).get("mode", "source")
               name = get("name")
               if mode == "prebuilt":
                   keys = dict(l.split("=", 1) for l in subprocess.check_output(["python3", "scripts/fetch_wheels.py", y, "--keys"], text=True).split())
                   fi_key, vllm_key = f"{name}-{keys['flashinfer']}", f"{name}-{keys['vllm']}"
               else:
-                  fi_key = f"fi-{args['FLASHINFER_REF']}-{args['TORCH_VERSION']}-{h.hexdigest()[:12]}"
-                  vllm_key = f"vllm-{args['VLLM_REF']}-{args['FLASHINFER_REF']}-{args['TORCH_VERSION']}-{h.hexdigest()[:12]}"
+                  fi_key = f"fi-{args['FLASHINFER_REF']}-{args['TORCH_VERSION']}-{ctx}-{argsig}"
+                  vllm_key = f"vllm-{name}-{args['VLLM_REF']}-{args['FLASHINFER_REF']}-{args['TORCH_VERSION']}-{ctx}-{argsig}"
               items.append({
                   "dir": d, "name": name, "image": get("image"), "version": get("version"),
                   "context": get("context"), "dockerfile": get("dockerfile"), "mode": mode,
                   "fi_key": fi_key, "vllm_key": vllm_key,
               })
           print("matrix=" + json.dumps({"include": items}))
+          # No affected variant is an ordinary outcome, not a failure: the
+          # build jobs are skipped on this flag rather than run over nothing.
+          print("any=" + ("true" if items else "false"))
           EOF
 
   flashinfer-wheels:
     needs: plan
+    if: needs.plan.outputs.any == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     strategy:
@@ -124,6 +176,7 @@ jobs:
 
   vllm-wheels:
     needs: [plan, flashinfer-wheels]
+    if: needs.plan.outputs.any == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     strategy:
@@ -167,6 +220,7 @@ jobs:
 
   image:
     needs: [plan, flashinfer-wheels, vllm-wheels]
+    if: needs.plan.outputs.any == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 240
     strategy:
