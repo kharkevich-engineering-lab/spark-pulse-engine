@@ -34,9 +34,6 @@ on:
 # prebuilt wheels and finishes in under an hour, while a source-mode variant
 # would spend hours rebuilding wheels nothing asked for.
 
-env:
-  REGISTRY: ghcr.io
-
 permissions:
   contents: read
   packages: write
@@ -130,154 +127,27 @@ jobs:
           print("any=" + ("true" if items else "false"))
           EOF
 
-  flashinfer-wheels:
+  # One independent chain per variant. `needs` is evaluated per job, not per
+  # matrix entry, so when these were three matrix jobs a single variant's wheel
+  # failure skipped the wheel and image jobs for every variant — including ones
+  # whose own wheels had already built. Calling a reusable workflow per variant
+  # is what makes them independent; `fail-fast: false` alone never could.
+  variant:
     needs: plan
     if: needs.plan.outputs.any == 'true'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v6
-      - id: cache
-        uses: actions/cache@v4
-        with:
-          path: wheels/${{ matrix.name }}/flashinfer
-          key: ${{ matrix.fi_key }}
-      - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - if: steps.cache.outputs.cache-hit != 'true'
-        run: pip install pyyaml
-      - if: steps.cache.outputs.cache-hit != 'true' && matrix.mode == 'prebuilt'
-        name: Download prebuilt FlashInfer wheels
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 scripts/fetch_wheels.py ${{ matrix.dir }}/engine.yaml --out /tmp/w
-          mkdir -p wheels/${{ matrix.name }} && mv /tmp/w/flashinfer wheels/${{ matrix.name }}/flashinfer
-          ls -la wheels/${{ matrix.name }}/flashinfer
-      - if: steps.cache.outputs.cache-hit != 'true' && matrix.mode == 'source'
-        uses: ./.github/actions/free-disk
-      - if: steps.cache.outputs.cache-hit != 'true' && matrix.mode == 'source'
-        uses: docker/setup-buildx-action@v3
-      - if: steps.cache.outputs.cache-hit != 'true' && matrix.mode == 'source'
-        name: Build FlashInfer wheels
-        run: |
-          set -eu
-          mapfile -t ARGS < <(python3 scripts/build_args.py ${{ matrix.dir }}/engine.yaml)
-          docker buildx build --platform linux/arm64 -f ${{ matrix.dockerfile }} "${ARGS[@]}" \
-            --build-arg BUILD_JOBS=$(nproc) \
-            --cache-from type=gha,scope=vllm-base --cache-to type=gha,scope=vllm-base,mode=max \
-            --target flashinfer-export --output type=local,dest=wheels/${{ matrix.name }}/flashinfer ${{ matrix.context }}
-          ls -la wheels/${{ matrix.name }}/flashinfer
-
-  vllm-wheels:
-    needs: [plan, flashinfer-wheels]
-    if: needs.plan.outputs.any == 'true'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v6
-      - id: cache
-        uses: actions/cache@v4
-        with:
-          path: wheels/${{ matrix.name }}/vllm
-          key: ${{ matrix.vllm_key }}
-      - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - if: steps.cache.outputs.cache-hit != 'true'
-        run: pip install pyyaml
-      - if: steps.cache.outputs.cache-hit != 'true' && matrix.mode == 'prebuilt'
-        name: Download prebuilt vLLM wheel
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 scripts/fetch_wheels.py ${{ matrix.dir }}/engine.yaml --out /tmp/w
-          mkdir -p wheels/${{ matrix.name }} && mv /tmp/w/vllm wheels/${{ matrix.name }}/vllm
-          ls -la wheels/${{ matrix.name }}/vllm
-      - if: steps.cache.outputs.cache-hit != 'true' && matrix.mode == 'source'
-        uses: ./.github/actions/free-disk
-      - if: steps.cache.outputs.cache-hit != 'true' && matrix.mode == 'source'
-        uses: docker/setup-buildx-action@v3
-      - if: steps.cache.outputs.cache-hit != 'true' && matrix.mode == 'source'
-        name: Build vLLM wheel
-        run: |
-          set -eu
-          mapfile -t ARGS < <(python3 scripts/build_args.py ${{ matrix.dir }}/engine.yaml)
-          docker buildx build --platform linux/arm64 -f ${{ matrix.dockerfile }} "${ARGS[@]}" \
-            --build-arg BUILD_JOBS=$(nproc) \
-            --cache-from type=gha,scope=vllm-base \
-            --target vllm-export --output type=local,dest=wheels/${{ matrix.name }}/vllm ${{ matrix.context }}
-          ls -la wheels/${{ matrix.name }}/vllm
-
-  image:
-    needs: [plan, flashinfer-wheels, vllm-wheels]
-    if: needs.plan.outputs.any == 'true'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 240
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/cache/restore@v4
-        with:
-          path: wheels/${{ matrix.name }}/flashinfer
-          key: ${{ matrix.fi_key }}
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v4
-        with:
-          path: wheels/${{ matrix.name }}/vllm
-          key: ${{ matrix.vllm_key }}
-          fail-on-cache-miss: true
-      - uses: ./.github/actions/free-disk
-      - uses: docker/setup-buildx-action@v3
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: pip install pyyaml
-      - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request' && (github.event.inputs.push != 'false')
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push runner image
-        id: build
-        run: |
-          set -eu
-          mapfile -t ARGS < <(python3 scripts/build_args.py ${{ matrix.dir }}/engine.yaml)
-          PUSH="${{ github.event_name != 'pull_request' && github.event.inputs.push != 'false' }}"
-          OUT=(--load); [ "$PUSH" = true ] && OUT=(--push)
-          docker buildx build --platform linux/arm64 -f ${{ matrix.dockerfile }} "${ARGS[@]}" \
-            --build-arg BUILD_JOBS=$(nproc) \
-            --build-context flashinfer_wheels=wheels/${{ matrix.name }}/flashinfer \
-            --build-context vllm_wheels=wheels/${{ matrix.name }}/vllm \
-            --cache-from type=gha,scope=vllm-base \
-            --cache-from type=gha,scope=${{ matrix.name }}-runner --cache-to type=gha,scope=${{ matrix.name }}-runner,mode=max \
-            --target runner \
-            -t ${{ matrix.image }}:${{ matrix.version }} \
-            -t ${{ matrix.image }}:${{ matrix.version }}-${{ github.sha }} \
-            -t ${{ matrix.image }}:latest \
-            --metadata-file /tmp/meta.json "${OUT[@]}" ${{ matrix.context }}
-          if [ "$PUSH" = true ]; then
-            echo "digest=$(python3 -c 'import json; print(json.load(open("/tmp/meta.json"))["containerimage.digest"])')" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Record digest
-        if: steps.build.outputs.digest != ''
-        run: |
-          mkdir -p digests
-          echo '{"${{ matrix.image }}:${{ matrix.version }}": "${{ steps.build.outputs.digest }}"}' > digests/${{ matrix.name }}.json
-      - uses: actions/upload-artifact@v4
-        if: steps.build.outputs.digest != ''
-        with:
-          name: digest-${{ matrix.name }}
-          path: digests/
+    uses: ./.github/workflows/build-vllm-variant.yml
+    with:
+      dir: ${{ matrix.dir }}
+      name: ${{ matrix.name }}
+      image: ${{ matrix.image }}
+      version: ${{ matrix.version }}
+      context: ${{ matrix.context }}
+      dockerfile: ${{ matrix.dockerfile }}
+      mode: ${{ matrix.mode }}
+      fi_key: ${{ matrix.fi_key }}
+      vllm_key: ${{ matrix.vllm_key }}
+      push: ${{ github.event_name != 'pull_request' && github.event.inputs.push != 'false' }}
+    secrets: inherit
