@@ -66,4 +66,13 @@ runtime:
 # anything away. `verified` is what records that this variant has not yet been
 # run on hardware.
 capabilities: {mods: true, pr_mods: true, solo: true, cluster: true, mesh: true}
-verified: []
+verified:
+  # Built from source on the GB10 itself, because no runner has ever completed
+  # this build: the FlashInfer stage takes ~63 min on 20 cores. The image is a
+  # local build from exactly these pins, so it carries no published digest yet;
+  # add the digest here once CI publishes one from the same refs.
+  - {nodes: 1, tp: 1, model: Qwen/Qwen2.5-0.5B-Instruct, date: "2026-09-04",
+     notes: "scripts/smoke-test.sh on GB10 (driver 580.159.03), local source build
+     image id 9a358bd6c12c (23.6 GB), vllm 0.1.dev18609+g47ccf6c57 from the
+     local-inference-lab fork, b12x 694e7650; /v1/models answered and a chat
+     completion returned. First build of this variant that has ever completed."}
