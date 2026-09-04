@@ -125,7 +125,13 @@ FROM base AS flashinfer-builder
 ARG FLASHINFER_REPO
 ARG FLASHINFER_REF
 ARG TORCH_CUDA_ARCH_LIST
-ENV FLASHINFER_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
+# FlashInfer ships a `.python-version` pinning 3.10, and uv honours it ahead of
+# whatever interpreter the image has — so `uv build` demanded a 3.10 that this
+# CUDA base (3.12) does not carry and failed in under a tenth of a second. Every
+# uv build below names the interpreter explicitly rather than letting the
+# checkout choose one for us.
+ENV FLASHINFER_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
+    UV_PYTHON=python3
 
 RUN set -eu; \
     git clone --recursive "$FLASHINFER_REPO" /workspace/flashinfer && \
@@ -144,9 +150,9 @@ RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
         git apply /tmp/flashinfer_cache.patch; \
     fi && \
     sed -i -e 's/license = "Apache-2.0"/license = { text = "Apache-2.0" }/' -e '/license-files/d' pyproject.toml && \
-    uv build --no-build-isolation --wheel . --out-dir=/workspace/wheels && \
-    (cd flashinfer-cubin && uv build --no-build-isolation --wheel . --out-dir=/workspace/wheels) && \
-    (cd flashinfer-jit-cache && uv build --no-build-isolation --wheel . --out-dir=/workspace/wheels) && \
+    uv build --python "$UV_PYTHON" --no-build-isolation --wheel . --out-dir=/workspace/wheels && \
+    (cd flashinfer-cubin && uv build --python "$UV_PYTHON" --no-build-isolation --wheel . --out-dir=/workspace/wheels) && \
+    (cd flashinfer-jit-cache && uv build --python "$UV_PYTHON" --no-build-isolation --wheel . --out-dir=/workspace/wheels) && \
     git rev-parse HEAD > /workspace/wheels/.flashinfer-commit && \
     printf '%s\n' "$FLASHINFER_CUDA_ARCH_LIST" > /workspace/wheels/.flashinfer-arch
 
