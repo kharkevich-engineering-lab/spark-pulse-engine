@@ -99,3 +99,12 @@ The vLLM Dockerfile and the patch queue derive from
 [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) (MIT). The
 SGLang runtime contract follows the findings in
 [mark-ramsey-ri/sglang-dgx-spark](https://github.com/mark-ramsey-ri/sglang-dgx-spark).
+
+## Availability
+
+`index.yaml` carries `available` per engine. It is false when the publish
+workflow found no digest for that image, meaning it has never been built and
+pushed. `vllm-b12x` is in that state: it is a from-source build of the
+local-inference-lab fork, it has not been built, and it has never been run on
+hardware. Consumers should not offer an unavailable engine, because pulling it
+returns a 403 rather than an image.
