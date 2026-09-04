@@ -141,6 +141,16 @@ RUN set -eu; \
 WORKDIR /workspace/flashinfer
 COPY patches/flashinfer_cache.patch /tmp/flashinfer_cache.patch
 
+# flashinfer-cubin fetches ~42,700 cubins one HTTP request at a time from
+# NVIDIA's artifactory, takes around 25 minutes, and fails the whole build if a
+# single one of them fails — upstream collects the results and asserts
+# `all(...)` with no retry. A CI run has already reached 42749/42749 and still
+# raised "Failed to download cubins".
+#
+# This is what flashinfer_cache.patch is for. It makes the loop skip any cubin
+# already on disk that verifies against its checksum, so a retry inside the same
+# RUN — where the previous attempt's downloads still exist — re-fetches only the
+# handful that failed instead of starting over.
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     --mount=type=cache,id=ccache,target=/root/.ccache \
     set -eu; \
@@ -151,7 +161,11 @@ RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     fi && \
     sed -i -e 's/license = "Apache-2.0"/license = { text = "Apache-2.0" }/' -e '/license-files/d' pyproject.toml && \
     uv build --python "$UV_PYTHON" --no-build-isolation --wheel . --out-dir=/workspace/wheels && \
-    (cd flashinfer-cubin && uv build --python "$UV_PYTHON" --no-build-isolation --wheel . --out-dir=/workspace/wheels) && \
+    (cd flashinfer-cubin && for attempt in 1 2 3; do \
+        uv build --python "$UV_PYTHON" --no-build-isolation --wheel . --out-dir=/workspace/wheels && break; \
+        if [ "$attempt" = 3 ]; then exit 1; fi; \
+        echo "cubin download attempt $attempt failed; retrying, already-verified files are skipped"; \
+    done) && \
     (cd flashinfer-jit-cache && uv build --python "$UV_PYTHON" --no-build-isolation --wheel . --out-dir=/workspace/wheels) && \
     git rev-parse HEAD > /workspace/wheels/.flashinfer-commit && \
     printf '%s\n' "$FLASHINFER_CUDA_ARCH_LIST" > /workspace/wheels/.flashinfer-arch
