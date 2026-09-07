@@ -16,7 +16,14 @@ sources:
 
 runtime:
   workdir: /workspace
-  serve: max serve
+  # `--no-device-graph-capture` is not a preference: without it MAX dies on a
+  # GB10 during warmup, in `warmup_graph_capture` -> `vmmCreate failed: CUDA
+  # call failed: CUDA_ERROR_INVALID_DEVICE (invalid device ordinal)`. The
+  # unified-memory virtual allocation this hardware uses is what its graph
+  # capture cannot do. Measured on a GB10 (driver 580.159.03): with the flag it
+  # serves, without it the worker crashes before listening. `--devices gpu:0`
+  # was tried alongside and is not needed.
+  serve: max serve --no-device-graph-capture
   model_arg: --model
   # MAX answers readiness under /v1, not at the root.
   readiness: /v1/health
@@ -36,11 +43,22 @@ runtime:
   # one, that means one.
   multi_node:
     style: none
+  # No `host`: `max serve` has no such option, and passing one is not a
+  # warning but an immediate "No such option '--host'". It binds every
+  # interface on its own. Verified against `max serve --help` in 26.5.0 on a
+  # GB10, which is also where `--device-memory-utilization` came from --
+  # MAX's spelling of the fraction every other engine calls something else.
   param_flags:
     port: --port
-    host: --host
     max_model_len: --max-length
     max_num_seqs: --max-batch-size
+    gpu_memory_utilization: --device-memory-utilization
 
 capabilities: {mods: false, pr_mods: false, solo: true, cluster: false, mesh: false}
-verified: []
+verified:
+  - {nodes: 1, tp: 1, model: Qwen/Qwen2.5-0.5B-Instruct, date: "2026-09-07",
+     notes: "scripts/smoke-test.sh on GB10 (driver 580.159.03), image 26.5.0
+     digest 58d6d31d; /v1/health ready, /v1/models named the model,
+     chat completion returned. Needs --no-device-graph-capture: without it the
+     model worker crashes in warmup_graph_capture with
+     CUDA_ERROR_INVALID_DEVICE. Note max serve has no --host flag at all."}
