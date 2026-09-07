@@ -19,11 +19,14 @@ Auth: anonymous by default (public packages). Set GITHUB_TOKEN — or pass
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import pathlib
+import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import yaml
@@ -43,54 +46,93 @@ ACCEPT = ", ".join(
 )
 
 
+#: ``docker.io`` is a name, not a registry API host. Everything else that has
+#: ever appeared in an engine.yaml answers on its own hostname.
+API_HOST = {"docker.io": "registry-1.docker.io", "index.docker.io": "registry-1.docker.io"}
+
+
 def split_ref(image: str) -> tuple[str, str]:
-    """``ghcr.io/owner/name`` -> (registry host, repository path)."""
+    """``ghcr.io/owner/name`` -> (registry API host, repository path)."""
     host, _, repository = image.partition("/")
     if "." not in host and ":" not in host and host != "localhost":
         raise ValueError(f"image without a registry host: {image}")
-    return host, repository
+    return API_HOST.get(host, host), repository
 
 
-def bearer(host: str, repository: str, username: str, password: str) -> str:
-    """A pull token for one repository, anonymous when no password is given."""
-    url = (
-        f"https://{host}/token?scope=repository:{repository}:pull"
-        f"&service={host}"
-    )
+def parse_challenge(header: str) -> dict[str, str]:
+    """``Bearer realm="...",service="...",scope="..."`` -> its parameters."""
+    scheme, _, rest = header.strip().partition(" ")
+    if scheme.lower() != "bearer":
+        return {}
+    params: dict[str, str] = {}
+    for part in re.findall(r'(\w+)="([^"]*)"', rest):
+        params[part[0]] = part[1]
+    return params
+
+
+def bearer(challenge: dict[str, str], username: str, password: str) -> str:
+    """A pull token, following the registry's own auth challenge.
+
+    Every registry names its token endpoint in the ``WWW-Authenticate`` header
+    of the 401 it just sent, and they do not agree on what that endpoint is:
+    ghcr.io serves ``/token``, Docker Hub sends you to ``auth.docker.io``, and
+    nvcr.io to ``/proxy_auth``. Guessing ``https://<host>/token`` works for
+    exactly one of the three, and the other two answer 404 -- which looks
+    identical to an unpublished image. So ask, rather than assume.
+    """
+    realm = challenge.get("realm")
+    if not realm:
+        return ""
+    query = {k: v for k, v in challenge.items() if k in ("service", "scope") and v}
+    url = realm + ("?" + urllib.parse.urlencode(query) if query else "")
     request = urllib.request.Request(url)
     if password:
-        import base64
-
         raw = base64.b64encode(f"{username}:{password}".encode()).decode()
         request.add_header("Authorization", f"Basic {raw}")
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            return str(json.load(response).get("token") or "")
+            body = json.load(response)
+            return str(body.get("token") or body.get("access_token") or "")
     except urllib.error.URLError as exc:
         # A repository that does not exist and a private one we may not read
         # both answer this way. Either means "no digest to record", but only
         # the second is a misconfiguration, so say which case this could be.
         how = "with credentials" if password else "anonymously"
         print(
-            f"warning: no pull token for {repository} {how} ({exc}); "
+            f"warning: no pull token from {realm} {how} ({exc}); "
             "treating it as unpublished",
             file=sys.stderr,
         )
         return ""
 
 
-def digest_of(image: str, tag: str, username: str, password: str) -> str:
-    """The digest the registry serves for ``image:tag``, or "" when absent."""
-    host, repository = split_ref(image)
-    token = bearer(host, repository, username, password)
-    request = urllib.request.Request(
-        f"https://{host}/v2/{repository}/manifests/{tag}", method="HEAD"
-    )
+def head_manifest(url: str, token: str = "") -> urllib.request.Request:
+    request = urllib.request.Request(url, method="HEAD")
     request.add_header("Accept", ACCEPT)
     if token:
         request.add_header("Authorization", f"Bearer {token}")
+    return request
+
+
+def digest_of(image: str, tag: str, username: str, password: str) -> str:
+    """The digest the registry serves for ``image:tag``, or "" when absent."""
+    host, repository = split_ref(image)
+    url = f"https://{host}/v2/{repository}/manifests/{tag}"
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(head_manifest(url), timeout=30) as response:
+            return str(response.headers.get("Docker-Content-Digest") or "")
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (401, 403):
+            if exc.code == 404:
+                return ""
+            raise
+        challenge = parse_challenge(exc.headers.get("WWW-Authenticate") or "")
+
+    token = bearer(challenge, username, password)
+    if not token:
+        return ""
+    try:
+        with urllib.request.urlopen(head_manifest(url, token), timeout=30) as response:
             return str(response.headers.get("Docker-Content-Digest") or "")
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403, 404):
@@ -110,14 +152,17 @@ def main() -> int:
     missing: list[str] = []
     for path in sorted(ns.engines.glob("*/engine.yaml")):
         engine = yaml.safe_load(path.read_text())
-        image, version = engine["image"], str(engine["version"])
-        digest = digest_of(image, version, ns.username, ns.password)
+        # An engine built here is published at the version we gave it; one we
+        # only point at keeps whatever tag its publisher uses.
+        image = engine["image"]
+        tag = str(engine.get("tag") or engine["version"])
+        digest = digest_of(image, tag, ns.username, ns.password)
         if digest:
-            digests[f"{image}:{version}"] = digest
-            print(f"{path.parent.name}: {version} -> {digest}")
+            digests[f"{image}:{tag}"] = digest
+            print(f"{path.parent.name}: {tag} -> {digest}")
         else:
             missing.append(path.parent.name)
-            print(f"{path.parent.name}: {version} -> not published")
+            print(f"{path.parent.name}: {tag} -> not published")
 
     ns.out.write_text(json.dumps(digests, indent=2, sort_keys=True) + "\n")
     print(f"wrote {ns.out} with {len(digests)} published engine(s)")

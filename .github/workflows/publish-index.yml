@@ -8,7 +8,7 @@ name: publish-index
 
 on:
   workflow_run:
-    workflows: [build-vllm, build-sglang]
+    workflows: [build-vllm, build-sglang, build-llama-cpp]
     types: [completed]
     branches: [main]
   workflow_dispatch:

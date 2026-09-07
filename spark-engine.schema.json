@@ -44,6 +44,10 @@
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
       "description": "Semver of this image definition; used as the tag."
     },
+    "tag": {
+      "type": "string",
+      "description": "Tag to pull, when it is not `version`. Only for images built elsewhere (build.external), whose upstream tag is not our semver. Absent means `version` is the tag."
+    },
     "legacy_tags": {
       "type": "array",
       "items": {
@@ -303,7 +307,7 @@
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Where to build from, relative to the repo root. Defaults to the engine.yaml directory and its Dockerfile.",
+      "description": "Where to build from, relative to the repo root. Defaults to the engine.yaml directory and its Dockerfile. `external: true` means this repo builds nothing for the engine.",
       "properties": {
         "context": {
           "type": "string"
@@ -313,6 +317,10 @@
         },
         "target": {
           "type": "string"
+        },
+        "external": {
+          "type": "boolean",
+          "description": "This image is built somewhere else and pulled as it is. Nothing in this repo builds it, no Dockerfile is expected, and CI neither builds nor pushes it: the engine.yaml records the runtime contract and pins the upstream image by digest."
         }
       }
     },
