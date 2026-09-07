@@ -35,7 +35,9 @@ def main() -> int:
     entries = []
     for path in sorted(ROOT.glob("engines/*/engine.yaml")):
         engine = yaml.safe_load(path.read_text())
-        tag = f'{engine["image"]}:{engine["version"]}'
+        # An engine we build is pulled at the version we gave it. One we only
+        # point at is pulled at whatever its publisher called it.
+        tag = f'{engine["image"]}:{engine.get("tag") or engine["version"]}'
         digest = digests.get(tag)
         entry = {
             "id": path.parent.name,
@@ -53,6 +55,7 @@ def main() -> int:
             "legacy_tags": list(engine.get("legacy_tags", [])),
             "description": engine.get("description", ""),
             "capabilities": dict(engine.get("capabilities", {})),
+            "external": bool((engine.get("build") or {}).get("external")),
             "spec": copy.deepcopy(engine),
         }
         entries.append(entry)

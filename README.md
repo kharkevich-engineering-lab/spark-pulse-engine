@@ -13,6 +13,11 @@ index and pulls by digest.
 | `engines/vllm` | `ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/vllm` | vLLM built from source with the Spark patch queue |
 | `engines/vllm-b12x` | `.../spark-pulse-engine/vllm-b12x` | vLLM from the local-inference-lab fork plus B12X kernels |
 | `engines/sglang` | `.../spark-pulse-engine/sglang` | SGLang, wrapping the upstream cu130 image |
+| `engines/llama-cpp` | `.../spark-pulse-engine/llama-cpp` | llama.cpp's `llama-server`, built from source with CUDA 13 kernels for `sm_121` only |
+| `engines/trtllm` | `nvcr.io/nvidia/tensorrt-llm/release` | TensorRT-LLM, NVIDIA's own DGX Spark release image (external) |
+| `engines/modular-max` | `docker.io/modular/max-nvidia-full` | Modular MAX, `max serve` (external) |
+| `engines/atlas` | `docker.io/azeezish/atlas-gb10` | Atlas, a pure-Rust server, from the image its quick-start publishes (external) |
+| `engines/tokenary` | `docker.io/scitrera/tokenary` | tokenary, an experimental Rust engine. No public image yet, so the index carries it unavailable (external) |
 
 Index: `ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/index:latest`
 (OCI artifact holding `index.yaml`).
@@ -29,12 +34,41 @@ scripts/validate.py            schema + pin checks
 scripts/inventory.py           engines/*/engine.yaml -> index.yaml
 scripts/build.sh               local build helper
 scripts/smoke-test.sh          run on a Spark: idle container, exec serve, probe readiness
-.github/workflows/             validate, build-vllm, build-sglang, publish-index
+scripts/resolve_digests.py     ask each registry what is actually published
+.github/workflows/             validate, build-vllm, build-sglang, build-llama-cpp, publish-index
 ```
+
+## Engines we build, and engines we point at
+
+Most engine directories here hold a Dockerfile: we build the image, push it to
+our own registry, and the index pins it by digest. Four do not. `build:
+{external: true}` says this repo builds nothing for that engine — the image is
+somebody else's, it is pulled as it is, and the `engine.yaml` is only the
+runtime contract plus a record of what it points at.
+
+That is the right shape when rebuilding would change nothing and cost a great
+deal. NVIDIA's TensorRT-LLM release image for the Spark is 21 GB compressed
+across 95 layers; wrapping it on a hosted 4-core arm64 runner to add a label is
+not a trade worth making. Modular and Atlas publish images for this hardware
+themselves. Nothing is added by copying them.
+
+An external engine names its upstream tag in `tag`, because a publisher's tag
+is rarely our semver — `version` stays the version of the *definition*.
+`resolve_digests.py` resolves `image:tag` against whatever registry it lives on
+(following the registry's own auth challenge, since ghcr.io, Docker Hub and
+nvcr.io each put their token endpoint somewhere different), so the index pins a
+digest even for a tag as slippery as `latest`, and an image nobody can pull
+comes out `available: false` rather than as a deploy that 403s.
+
+Everything an external engine loses is worth naming: no patch queue, no
+provenance we control, and no guarantee the publisher will not move the tag
+under the next index run.
 
 ## engine.yaml
 
-`sources` pins every input (git SHA or tag, package version, base image).
+`sources` pins every input (git SHA or tag, package version, base image); for
+an external engine it is the upstream image itself, digest-pinned where one has
+been published.
 `runtime` is the contract Spark Pulse relies on: serve command, how the model
 is passed, readiness and metrics paths, ports, cache mounts, base env, the
 container profile (privileged or not, ipc, shm, devices, ulimits) and the
