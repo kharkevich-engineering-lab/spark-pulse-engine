@@ -23,15 +23,27 @@ py() { python3 -c "import yaml,sys; e=yaml.safe_load(open('$YAML')); print($1)";
 SERVE=$(py 'e["runtime"]["serve"]')
 MODEL_ARG=$(py 'e["runtime"].get("model_arg","positional")')
 READY=$(py 'e["runtime"]["readiness"]')
-PORT=$(py 'e["runtime"]["ports"]["api"]')
+# The engine's own port, unless the caller names another: the machine worth
+# smoke testing on is usually a Spark that is already serving something, and
+# --network host means one busy port is the difference between a test and an
+# outage.
+PORT="${PORT:-$(py 'e["runtime"]["ports"]["api"]')}"
 PRIV=$(py 'str(e["runtime"].get("container",{}).get("privileged",False)).lower()')
 KEEP=$(py 'e["runtime"].get("container",{}).get("keepalive","sleep infinity")')
 PORT_FLAG=$(py 'e["runtime"].get("param_flags",{}).get("port","--port")')
-HOST_FLAG=$(py 'e["runtime"].get("param_flags",{}).get("host","--host")')
+# An engine that declares no host flag has none: `max serve` binds every
+# interface itself and refuses `--host` outright. Defaulting to "--host" here
+# invented a flag and failed the launch before the engine was tested at all.
+HOST_FLAG=$(py 'e["runtime"].get("param_flags",{}).get("host","")')
 
 RUN=("$TOOL" run -d --rm --name "$NAME" --gpus all --network host --ipc=host --entrypoint= \
-     -v "${HF_HOME:-$HOME/.cache/huggingface}:/root/.cache/huggingface" \
-     -e HF_TOKEN="${HF_TOKEN:-}")
+     -v "${HF_HOME:-$HOME/.cache/huggingface}:/root/.cache/huggingface")
+# Only when there is one. An empty HF_TOKEN is not the same as no token: it
+# becomes an `Authorization: Bearer ` header, and the Hub answers 401 to a
+# public repository that anonymous access would have served. llama.cpp's
+# downloader hits this and reports it as "Invalid username or password", which
+# sends you looking for a credential problem that does not exist.
+[ -n "${HF_TOKEN:-}" ] && RUN+=(-e "HF_TOKEN=$HF_TOKEN")
 if [ "$PRIV" = true ]; then RUN+=(--privileged --ulimit nofile=1048576:1048576)
 else RUN+=(--device=/dev/infiniband --ulimit memlock=-1 --shm-size=32g); fi
 for m in $(py '" ".join(e["runtime"].get("cache_mounts",[]))'); do
@@ -47,7 +59,8 @@ echo "== starting idle container from $IMAGE"
 "$TOOL" exec "$NAME" cat /workspace/build-metadata.yaml || true
 
 if [ "$MODEL_ARG" = positional ]; then CMD="$SERVE $MODEL"; else CMD="$SERVE $MODEL_ARG $MODEL"; fi
-CMD="$CMD $HOST_FLAG 0.0.0.0 $PORT_FLAG $PORT ${EXTRA_ARGS:-}"
+[ -n "$HOST_FLAG" ] && CMD="$CMD $HOST_FLAG 0.0.0.0"
+CMD="$CMD $PORT_FLAG $PORT ${EXTRA_ARGS:-}"
 echo "== exec: $CMD"
 "$TOOL" exec -d "$NAME" bash -c "$CMD >> /proc/1/fd/1 2>&1"
 
