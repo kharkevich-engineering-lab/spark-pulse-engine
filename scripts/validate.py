@@ -3,8 +3,9 @@
 
 Beyond the schema it checks that git sources are pinned to a full SHA or a
 tag (never a branch name) for the default branch build, that the Dockerfile
-referenced by `build` exists, and that every file in a patch queue is at least
-well formed — a `*.patch` git can parse, a `*.py` that compiles.
+referenced by `build` exists, that an engine built elsewhere (`build.external`)
+records the upstream image it points at, and that every file in a patch queue
+is at least well formed — a `*.patch` git can parse, a `*.py` that compiles.
 
 That last check exists because it was missing. `flashinfer_cache.patch` had a
 hunk header claiming nine lines over a body of eight, so `git apply` ran off
@@ -85,12 +86,50 @@ def main(argv: list[str]) -> int:
             print(f"{path}: {loc}: {err.message}")
 
         build = engine.get("build") or {}
-        dockerfile = ROOT / (build.get("dockerfile") or f"{path.parent.relative_to(ROOT)}/Dockerfile")
-        if not dockerfile.exists():
-            failed = True
-            print(f"{path}: dockerfile not found: {dockerfile.relative_to(ROOT)}")
+        external = bool(build.get("external"))
+        problems: list[str] = []
+
+        if external:
+            # Nothing here builds it, so there is no Dockerfile to find and no
+            # patch queue to parse. What there must be is a record of what we
+            # point at: for an engine we only pull, the upstream image *is* the
+            # artifact. Whether that record carries a digest is the existing
+            # strict warning below, not a failure -- an engine whose image has
+            # not been published yet has no digest to give, and refusing it
+            # would only push the definition out of the repo entirely.
+            if not any(
+                (src.get("image") or "") for src in (engine.get("sources") or {}).values()
+            ):
+                failed = True
+                print(
+                    f"{path}: build.external needs the upstream image under "
+                    "sources, so the index records what it points at"
+                )
+        else:
+            if engine.get("tag"):
+                failed = True
+                print(
+                    f"{path}: tag '{engine['tag']}' is set on an engine this "
+                    "repo builds, where the tag is always version"
+                )
+            dockerfile = ROOT / (build.get("dockerfile") or f"{path.parent.relative_to(ROOT)}/Dockerfile")
+            if not dockerfile.exists():
+                failed = True
+                print(f"{path}: dockerfile not found: {dockerfile.relative_to(ROOT)}")
+            else:
+                # The patch queue lives with the Dockerfile, which a variant
+                # may share.
+                problems = check_patch_queue(dockerfile.parent)
 
         for key, src in (engine.get("sources") or {}).items():
+            # An image source and a git source are different pins and a source
+            # carries one or the other. The image check used to sit after an
+            # early `continue` for sources with no `ref`, which is every image
+            # source there has ever been, so it had never once run.
+            image = src.get("image")
+            if image and "@sha256:" not in image and strict:
+                print(f"warning: {path}: sources/{key}/image is not digest-pinned")
+
             ref = src.get("ref")
             if ref is None:
                 continue
@@ -102,17 +141,17 @@ def main(argv: list[str]) -> int:
                     print(msg)
                 else:
                     print(f"warning: {msg}")
-            if "image" in src and "@sha256:" not in src["image"] and strict:
-                print(f"warning: {path}: sources/{key}/image is not digest-pinned")
 
-        # The patch queue lives with the Dockerfile, which a variant may share.
-        problems = check_patch_queue(dockerfile.parent)
         for problem in problems:
             failed = True
             print(f"{path}: {problem}")
 
         if not errors and not problems:
-            print(f"ok: {path.relative_to(ROOT)} ({engine['engine']}/{engine['variant']} {engine['version']})")
+            kind = " external" if external else ""
+            print(
+                f"ok: {path.relative_to(ROOT)} ({engine['engine']}/"
+                f"{engine['variant']} {engine['version']}{kind})"
+            )
 
     return 1 if failed else 0
 
