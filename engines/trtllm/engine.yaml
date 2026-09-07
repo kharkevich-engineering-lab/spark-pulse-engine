@@ -52,4 +52,9 @@ runtime:
     max_num_batched_tokens: --max_num_tokens
 
 capabilities: {mods: false, pr_mods: false, solo: true, cluster: false, mesh: false}
-verified: []
+verified:
+  - {nodes: 1, tp: 1, model: Qwen/Qwen2.5-0.5B-Instruct, date: "2026-09-07",
+     notes: "scripts/smoke-test.sh on GB10 (driver 580.159.03), image digest
+     4342a40d; ready in 55s, /v1/models and a chat completion answered. Run with
+     --kv_cache_free_gpu_memory_fraction 0.15 --max_seq_len 4096 because the
+     machine was already serving another model; the defaults were not exercised."}

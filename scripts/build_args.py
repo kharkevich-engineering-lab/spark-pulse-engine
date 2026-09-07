@@ -69,12 +69,17 @@ def main() -> int:
     dockerfile = build.get("dockerfile") or str(pathlib.Path(context) / "Dockerfile")
 
     if ns.get:
+        # An engine built here is published at the version we gave it; one we
+        # only point at (`build.external`) keeps whatever tag its publisher
+        # uses, which is rarely our semver. `--get tag` has to be the thing a
+        # pull would actually resolve, because that is what it is used for.
+        tag = str(engine.get("tag") or engine["version"])
         value = {
             "image": engine["image"],
             "version": engine["version"],
             "context": context,
             "dockerfile": dockerfile,
-            "tag": f'{engine["image"]}:{engine["version"]}',
+            "tag": f'{engine["image"]}:{tag}',
             "name": ns.engine_yaml.parent.name,
         }[ns.get]
         print(value)

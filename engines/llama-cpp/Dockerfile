@@ -38,7 +38,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       gcc-${GCC_VERSION} g++-${GCC_VERSION} build-essential cmake git ca-certificates \
-      libcurl4-openssl-dev libgomp1 && \
+      libssl-dev libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
 ENV CC=gcc-${GCC_VERSION} CXX=g++-${GCC_VERSION} CUDAHOSTCXX=g++-${GCC_VERSION}
@@ -51,25 +51,32 @@ RUN git init -q . && \
     git fetch -q --depth 1 origin ${LLAMA_CPP_REF} && \
     git checkout -q FETCH_HEAD
 
-# LLAMA_CURL is what makes `-hf <repo>` resolve a GGUF from HuggingFace, which
-# is how a model reaches this engine at all: llama.cpp reads GGUF, and the
-# control plane's snapshots are HuggingFace repositories.
+# `libssl-dev` above is not incidental: it is what `-hf <repo>` needs to work,
+# and `-hf` is how a model reaches this engine at all. Without OpenSSL headers
+# at build time llama.cpp compiles happily, starts happily, and then answers
+# every download with "HTTPS is not supported. Please rebuild with ...". The
+# first image built here had exactly that, and it is invisible until something
+# asks for a model.
 RUN cmake -B build \
       -DGGML_NATIVE=OFF \
       -DGGML_CUDA=ON \
       -DGGML_BACKEND_DL=ON \
       -DGGML_CPU_ALL_VARIANTS=ON \
       -DCMAKE_CUDA_ARCHITECTURES=${CUDA_DOCKER_ARCH} \
-      -DLLAMA_CURL=ON \
       -DLLAMA_BUILD_TESTS=OFF \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined . && \
     cmake --build build --config Release -j"$(nproc)"
 
-RUN mkdir -p /out/bin /out/lib && \
-    find build -name "*.so*" -exec cp -P {} /out/lib \; && \
-    cp build/bin/llama-server build/bin/llama-cli /out/bin/ && \
-    printf '%s\n' "${LLAMA_CPP_REF}" > /out/llama-cpp-ref
+# Binaries and backend libraries in one directory, deliberately. ggml loads
+# its backends as separate shared objects and finds them by scanning the
+# directory the *executable* lives in; a lib directory on LD_LIBRARY_PATH is
+# not searched, and the process comes up with no CUDA device and no error
+# beyond a debug line. Upstream's own image does the same thing for the same
+# reason.
+RUN mkdir -p /out && \
+    find build -name "*.so*" -exec cp -P {} /out \; && \
+    cp build/bin/llama-server build/bin/llama-cli /out/
 
 FROM ${RUNTIME_IMAGE} AS runner
 ARG BASE_IMAGE
@@ -82,15 +89,12 @@ ARG GIT_SHA
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libgomp1 libcurl4 curl earlyoom && \
+    apt-get install -y --no-install-recommends libgomp1 libssl3t64 ca-certificates curl earlyoom && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /out/bin/ /usr/local/bin/
-COPY --from=build /out/lib/ /usr/local/lib/llama.cpp/
-ENV LD_LIBRARY_PATH=/usr/local/lib/llama.cpp:${LD_LIBRARY_PATH}
-# GGML loads its backends as shared objects; without this it finds the CPU one
-# next to the binary and never the CUDA one.
-ENV GGML_BACKEND_PATH=/usr/local/lib/llama.cpp
+COPY --from=build /out/ /opt/llama.cpp/
+ENV PATH=/opt/llama.cpp:${PATH}
+ENV LD_LIBRARY_PATH=/opt/llama.cpp:${LD_LIBRARY_PATH}
 
 RUN set -eu; \
     mkdir -p /workspace; \

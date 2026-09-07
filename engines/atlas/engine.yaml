@@ -55,6 +55,13 @@ runtime:
     max_num_batched_tokens: --max-prefill-tokens
 
 capabilities: {mods: false, pr_mods: false, solo: true, cluster: false, mesh: false}
-# Nothing here has been run on hardware by this project. The Atlas quick-start
-# reports its own numbers on a GB10; that is their evidence, not ours.
+# No serving run recorded here yet, and `verified` is for serving runs. What
+# has been checked on a GB10 (2026-09-07, driver 580.159.03, image digest
+# faa6e582) is the launch contract this file describes: the binary is `spark`
+# and takes the model positionally, `--host` is accepted as an undocumented
+# alias of `--bind`, and every flag in param_flags below exists. Atlas then
+# refuses anything outside its compiled kernel targets -- "No compiled kernel
+# target matches model_type 'qwen2'" for a 0.5B -- so a serving run needs one
+# of the 27B-class models it lists, which did not fit beside what was already
+# running on the machine.
 verified: []

@@ -3,7 +3,7 @@ engine: llama-cpp
 variant: default
 description: llama.cpp's llama-server, built from source with CUDA 13 kernels for sm_121 only.
 image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/llama-cpp
-version: 0.1.0
+version: 0.1.2
 legacy_tags: []
 arch: [linux/arm64]
 gpu_arch: ["12.1a"]
@@ -64,4 +64,10 @@ runtime:
     max_num_seqs: --parallel
 
 capabilities: {mods: false, pr_mods: false, solo: true, cluster: false, mesh: false}
-verified: []
+verified:
+  - {nodes: 1, tp: 1, model: Qwen/Qwen2.5-0.5B-Instruct-GGUF:q8_0, date: "2026-09-07",
+     notes: "scripts/smoke-test.sh on GB10 (driver 580.159.03), image 0.1.2 built
+     from llama.cpp 73ab7599 (tag b10840); ready in 5s, /v1/models and a chat
+     completion answered, `offloaded 25/25 layers to GPU` on CUDA0 with a
+     500.84 MiB model buffer. /metrics publishes the four llamacpp: names the
+     control plane reads."}
