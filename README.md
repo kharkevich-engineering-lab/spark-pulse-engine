@@ -17,7 +17,6 @@ index and pulls by digest.
 | `engines/trtllm` | `nvcr.io/nvidia/tensorrt-llm/release` | TensorRT-LLM, NVIDIA's own DGX Spark release image (external) |
 | `engines/modular-max` | `docker.io/modular/max-nvidia-full` | Modular MAX, `max serve` (external) |
 | `engines/atlas` | `docker.io/azeezish/atlas-gb10` | Atlas, a pure-Rust server, from the image its quick-start publishes (external) |
-| `engines/tokenary` | `docker.io/scitrera/tokenary` | tokenary, an experimental Rust engine. No public image yet, so the index carries it unavailable (external) |
 
 Index: `ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/index:latest`
 (OCI artifact holding `index.yaml`).
