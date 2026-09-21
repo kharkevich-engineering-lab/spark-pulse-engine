@@ -123,8 +123,8 @@ RUN set -eu; \
     } > /workspace/build-metadata.yaml && cat /workspace/build-metadata.yaml
 
 ENV LLAMA_ARG_HOST=0.0.0.0
-ENV LLAMA_CACHE=/root/.cache/llama.cpp
-ENV HF_HOME=/root/.cache/huggingface
+ENV LLAMA_CACHE=/home/spark/.cache/llama.cpp
+ENV HF_HOME=/home/spark/.cache/huggingface
 
 LABEL org.opencontainers.image.title="spark-pulse-engine/llama-cpp" \
       org.opencontainers.image.source="https://github.com/kharkevich-engineering-lab/spark-pulse-engine" \

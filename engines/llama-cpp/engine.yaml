@@ -3,7 +3,7 @@ engine: llama-cpp
 variant: default
 description: llama.cpp's llama-server, built from source with CUDA 13 kernels for sm_121 only.
 image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/llama-cpp
-version: 0.1.2
+version: 0.1.3
 legacy_tags: []
 arch: [linux/arm64]
 gpu_arch: ["12.1a"]
@@ -41,8 +41,8 @@ runtime:
   cache_mounts: [~/.cache/huggingface, ~/.cache/llama.cpp]
   env:
     LLAMA_ARG_HOST: 0.0.0.0
-    LLAMA_CACHE: /root/.cache/llama.cpp
-    HF_HOME: /root/.cache/huggingface
+    LLAMA_CACHE: /home/spark/.cache/llama.cpp
+    HF_HOME: /home/spark/.cache/huggingface
   container:
     privileged: false
     ipc_host: true
