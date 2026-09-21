@@ -5,7 +5,7 @@ description: >-
   llama.cpp from PrismML's fork, the only build that runs the PQ2_0 and PTQ1_0
   ternary GGUFs (Bonsai 2 27B). Same image as the default variant otherwise.
 image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/llama-cpp-prism
-version: 0.1.0
+version: 0.1.1
 legacy_tags: [llama-cpp-prism]
 arch: [linux/arm64]
 gpu_arch: ["12.1a"]
@@ -63,8 +63,8 @@ runtime:
   cache_mounts: [~/.cache/huggingface, ~/.cache/llama.cpp]
   env:
     LLAMA_ARG_HOST: 0.0.0.0
-    LLAMA_CACHE: /root/.cache/llama.cpp
-    HF_HOME: /root/.cache/huggingface
+    LLAMA_CACHE: /home/spark/.cache/llama.cpp
+    HF_HOME: /home/spark/.cache/huggingface
   container:
     privileged: false
     ipc_host: true
