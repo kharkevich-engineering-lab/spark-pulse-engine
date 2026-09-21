@@ -4,17 +4,30 @@ name: build-llama-cpp
 # of the few engines where that is cheap: one CUDA architecture, no PyTorch, no
 # wheel stages. It still takes far longer than the sglang wrapper, hence the
 # timeout.
+#
+# Two variants share one Dockerfile and differ only in which llama.cpp they
+# pin: `llama-cpp` builds upstream, `llama-cpp-prism` builds PrismML's fork for
+# the ternary GGUFs. That is a plain matrix rather than build-vllm's reusable
+# workflow, because each variant is one job with no `needs` between them —
+# the per-job `needs` problem that forced build-vllm-variant.yml does not
+# arise here, and `fail-fast: false` is enough to keep one variant's failure
+# from cancelling the other.
 
 on:
   push:
     branches: [main]
     paths:
       - "engines/llama-cpp/**"
+      - "engines/llama-cpp-prism/**"
       - ".github/workflows/build-llama-cpp.yml"
+      - "scripts/build_args.py"
   schedule:
     - cron: "30 5 * * 1"
   workflow_dispatch:
     inputs:
+      variants:
+        description: "Space-separated engine dirs to build"
+        default: "engines/llama-cpp engines/llama-cpp-prism"
       push:
         description: "Push to ghcr.io"
         type: boolean
@@ -31,40 +44,75 @@ jobs:
   image:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        # The engine.yaml path is the whole identity of a variant: image, tag,
+        # build args and cache scope all come out of it via build_args.py, so
+        # nothing is spelled twice here.
+        dir: [engines/llama-cpp, engines/llama-cpp-prism]
     steps:
       - uses: actions/checkout@v6
+      - name: Skip variants this dispatch did not ask for
+        id: want
+        run: |
+          set -eu
+          WANT="${{ github.event.inputs.variants }}"
+          if [ -z "$WANT" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif echo " $WANT " | grep -q " ${{ matrix.dir }} "; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.dir }} not in '$WANT', skipping"
+          fi
       - uses: ./.github/actions/free-disk
+        if: steps.want.outputs.build == 'true'
       - uses: docker/setup-buildx-action@v3
+        if: steps.want.outputs.build == 'true'
       - uses: actions/setup-python@v6
+        if: steps.want.outputs.build == 'true'
         with:
           python-version: "3.12"
       - run: pip install pyyaml
+        if: steps.want.outputs.build == 'true'
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request' && (github.event.inputs.push != 'false')
+        if: steps.want.outputs.build == 'true' && github.event_name != 'pull_request' && (github.event.inputs.push != 'false')
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push
         id: build
+        if: steps.want.outputs.build == 'true'
         run: |
           set -eu
-          Y=engines/llama-cpp/engine.yaml
+          Y=${{ matrix.dir }}/engine.yaml
           IMAGE=$(python3 scripts/build_args.py $Y --get image)
           VERSION=$(python3 scripts/build_args.py $Y --get version)
+          NAME=$(python3 scripts/build_args.py $Y --get name)
+          CONTEXT=$(python3 scripts/build_args.py $Y --get context)
+          DOCKERFILE=$(python3 scripts/build_args.py $Y --get dockerfile)
           mapfile -t ARGS < <(python3 scripts/build_args.py $Y)
           PUSH="${{ github.event_name != 'pull_request' && github.event.inputs.push != 'false' }}"
           OUT=(--load); [ "$PUSH" = true ] && OUT=(--push)
-          docker buildx build --platform linux/arm64 -f engines/llama-cpp/Dockerfile "${ARGS[@]}" \
-            --cache-from type=gha,scope=llama-cpp --cache-to type=gha,scope=llama-cpp,mode=max \
+          # Cache scope per variant. The two builds share a Dockerfile but not
+          # a llama.cpp ref, so one scope would mean each run evicting the
+          # other's layers from the first RUN that reads LLAMA_CPP_REF.
+          docker buildx build --platform linux/arm64 -f "$DOCKERFILE" "${ARGS[@]}" \
+            --cache-from type=gha,scope=$NAME --cache-to type=gha,scope=$NAME,mode=max \
             -t $IMAGE:$VERSION -t $IMAGE:$VERSION-${{ github.sha }} -t $IMAGE:latest \
-            --metadata-file /tmp/meta.json "${OUT[@]}" engines/llama-cpp
+            --metadata-file /tmp/meta.json "${OUT[@]}" "$CONTEXT"
           if [ "$PUSH" = true ]; then
             mkdir -p digests
-            python3 -c "import json; d=json.load(open('/tmp/meta.json'))['containerimage.digest']; json.dump({'$IMAGE:$VERSION': d}, open('digests/llama-cpp.json','w'))"
+            python3 -c "import json; d=json.load(open('/tmp/meta.json'))['containerimage.digest']; json.dump({'$IMAGE:$VERSION': d}, open('digests/$NAME.json','w'))"
+            cat digests/$NAME.json
           fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+      # One artifact per variant, named digest-<variant>, which is the shape
+      # publish-index's registry resolve and the vllm builds already use.
       - uses: actions/upload-artifact@v4
-        if: hashFiles('digests/llama-cpp.json') != ''
+        if: steps.build.outputs.name != '' && hashFiles(format('digests/{0}.json', steps.build.outputs.name)) != ''
         with:
-          name: digest-llama-cpp
+          name: digest-${{ steps.build.outputs.name }}
           path: digests/

@@ -161,6 +161,10 @@
             "rendezvous": {
               "type": "integer",
               "description": "Multi-node init port (torch master port, sglang dist-init)."
+            },
+            "rpc": {
+              "type": "integer",
+              "description": "Port a worker rank listens on when the multi-node style is a worker/head RPC rather than a collective rendezvous (llama.cpp's ggml-rpc-server)."
             }
           }
         },
@@ -229,6 +233,7 @@
               "enum": [
                 "torchrun",
                 "sglang",
+                "llama-rpc",
                 "none"
               ]
             },
