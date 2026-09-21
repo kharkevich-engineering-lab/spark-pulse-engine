@@ -1,0 +1,103 @@
+schema_version: "1"
+engine: llama-cpp
+variant: prism
+description: >-
+  llama.cpp from PrismML's fork, the only build that runs the PQ2_0 and PTQ1_0
+  ternary GGUFs (Bonsai 2 27B). Same image as the default variant otherwise.
+image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/llama-cpp-prism
+version: 0.1.0
+legacy_tags: [llama-cpp-prism]
+arch: [linux/arm64]
+gpu_arch: ["12.1a"]
+# A variant, not a second engine: it reuses engines/llama-cpp's Dockerfile
+# unchanged and differs only in which llama.cpp this is, exactly as
+# engines/vllm-b12x reuses engines/vllm.
+build: {context: engines/llama-cpp, dockerfile: engines/llama-cpp/Dockerfile}
+
+sources:
+  base: {image: nvidia/cuda:13.0.2-devel-ubuntu24.04}
+  runtime: {image: nvidia/cuda:13.0.2-runtime-ubuntu24.04}
+  # Branch `prism` (the prism-v7 line), head as of 2026-09-20.
+  #
+  # Why a fork at all: PrismML's ternary packings are not llama.cpp types.
+  # Stock llama.cpp rejects PQ2_0 and PTQ1_0 outright as unknown types, and —
+  # worse — loads a Q2_0 file without complaint and produces garbage, because
+  # it has no Hadamard activation runtime. Bonsai's weights are stored in a
+  # blockwise-Hadamard-rotated basis with the matching transform applied to
+  # activations at runtime; a build without those kernels either refuses the
+  # file or answers nonsense. There is no flag that recovers this on an
+  # unpatched binary, so the fork *is* the engine.
+  #
+  # Pinned to the commit, not the branch, and deliberately not to the
+  # `prism-b9601-68faa14` tag: that tag is the frozen v5 line (68faa147) and
+  # predates the current kernels.
+  llama_cpp:
+    repo: https://github.com/PrismML-Eng/llama.cpp.git
+    ref: 9a9394a895b96003ca842a6041cb28ac49a108f7
+
+build_args:
+  CUDA_DOCKER_ARCH: 121
+  GCC_VERSION: 14
+
+runtime:
+  workdir: /workspace
+  # `--metrics` is what makes llama-server serve /metrics at all. It is part of
+  # the launch rather than something a recipe has to remember, because a
+  # metrics path declared below and not served is a panel that says "the engine
+  # publishes nothing" forever.
+  serve: llama-server --metrics
+  # llama.cpp reads GGUF, and `-hf` resolves a GGUF from a HuggingFace repo.
+  # So the model this engine is given must be a GGUF repository (…-GGUF), not
+  # the safetensors repository the other engines take. A repo holding several
+  # packings — as prism-ml/Ternary-Bonsai-2-27B-gguf does — needs the recipe to
+  # name one with `--hf-file`.
+  model_arg: -hf
+  readiness: /health
+  models_endpoint: /v1/models
+  metrics: /metrics
+  # `rpc` is the port a worker rank's ggml-rpc-server listens on; see
+  # multi_node below. The api port is llama-server's own.
+  ports: {api: 8080, rpc: 50052}
+  # llama-server downloads what `-hf` resolves into LLAMA_CACHE, not into the
+  # HuggingFace cache, so both are mounted.
+  cache_mounts: [~/.cache/huggingface, ~/.cache/llama.cpp]
+  env:
+    LLAMA_ARG_HOST: 0.0.0.0
+    LLAMA_CACHE: /root/.cache/llama.cpp
+    HF_HOME: /root/.cache/huggingface
+  container:
+    privileged: false
+    ipc_host: true
+    network_host: true
+    keepalive: sleep infinity
+  # llama.cpp's own RPC backend, which is neither of the rendezvous styles the
+  # other engines use: there is no collective init and no world size. Each
+  # worker rank runs `ggml-rpc-server -H 0.0.0.0 -p 50052` and exposes its GPU;
+  # the head rank runs the ordinary llama-server with
+  # `--rpc <host>:50052,<host>:50052`, and llama.cpp splits weights and KV
+  # cache across local and remote devices in proportion to free memory.
+  #
+  # Upstream still calls the RPC backend a proof of concept and says plainly
+  # not to run it on an open network — which is survivable here, where the
+  # ranks talk over the Sparks' own fabric and nothing else can reach them.
+  # It also negotiates RDMA automatically over a RoCE-capable NIC, so a
+  # ConnectX pair uses it without any flag.
+  multi_node:
+    style: llama-rpc
+  # llama.cpp has no tensor or pipeline parallelism to map, and nothing that
+  # means gpu_memory_utilization: it allocates what the layers and the context
+  # need. Mapping a parameter onto a flag that means something else would be
+  # worse than leaving it unmapped, where it is simply dropped.
+  param_flags:
+    port: --port
+    host: --host
+    max_model_len: --ctx-size
+    max_num_seqs: --parallel
+
+# Same as the default llama-cpp variant, except `cluster`, which the RPC
+# backend above is what earns. `mesh` stays false: the RPC backend is a star,
+# one head against N workers, not an all-to-all. Mods are a vLLM mechanism and
+# this engine has none.
+capabilities: {mods: false, pr_mods: false, solo: true, cluster: true, mesh: false}
+# Nothing here has been run on hardware yet: this variant has never been built.
+verified: []

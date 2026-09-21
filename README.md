@@ -14,6 +14,7 @@ index and pulls by digest.
 | `engines/vllm-b12x` | `.../spark-pulse-engine/vllm-b12x` | vLLM from the local-inference-lab fork plus B12X kernels |
 | `engines/sglang` | `.../spark-pulse-engine/sglang` | SGLang, wrapping the upstream cu130 image |
 | `engines/llama-cpp` | `.../spark-pulse-engine/llama-cpp` | llama.cpp's `llama-server`, built from source with CUDA 13 kernels for `sm_121` only |
+| `engines/llama-cpp-prism` | `.../spark-pulse-engine/llama-cpp-prism` | The same build from [PrismML's llama.cpp fork](https://github.com/PrismML-Eng/llama.cpp) (branch `prism`), which is the only one that runs the `PQ2_0`/`PTQ1_0` ternary GGUFs |
 | `engines/trtllm` | `nvcr.io/nvidia/tensorrt-llm/release` | TensorRT-LLM, NVIDIA's own DGX Spark release image (external) |
 | `engines/modular-max` | `docker.io/modular/max-nvidia-full` | Modular MAX, `max serve` (external) |
 | `engines/atlas` | `docker.io/azeezish/atlas-gb10` | Atlas, a pure-Rust server, from the image its quick-start publishes (external) |
@@ -24,7 +25,8 @@ Index: `ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/index:latest`
 ## Layout
 
 ```
-engines/<name>/Dockerfile      build definition (vllm-b12x reuses engines/vllm)
+engines/<name>/Dockerfile      build definition (vllm-b12x reuses engines/vllm,
+                               llama-cpp-prism reuses engines/llama-cpp)
 engines/<name>/engine.yaml     pinned sources, runtime contract, capabilities, hardware evidence
 engines/vllm/patches/          patch queue applied to the pinned vLLM ref (see NOTICE)
 spark-engine.schema.json       schema for engine.yaml
@@ -62,6 +64,23 @@ comes out `available: false` rather than as a deploy that 403s.
 Everything an external engine loses is worth naming: no patch queue, no
 provenance we control, and no guarantee the publisher will not move the tag
 under the next index run.
+
+### Two llama.cpp builds
+
+`llama-cpp-prism` is a variant, not a second engine: it reuses
+`engines/llama-cpp/Dockerfile` unchanged and differs in one pin, the llama.cpp
+it clones. PrismML's ternary packings — `PQ2_0` and `PTQ1_0`, which Bonsai 2
+27B ships — are not llama.cpp types. Stock llama.cpp rejects them as unknown,
+and loads a `Q2_0` file with no warning and answers nonsense, because it has no
+Hadamard activation runtime; the fork's kernels are the whole engine. Nothing
+recovers this with a flag, so the fork gets its own image rather than the
+default variant moving off upstream.
+
+Both builds carry `-DGGML_RPC=ON` and `ggml-rpc-server`. That is what lets the
+prism variant declare `multi_node: {style: llama-rpc}` and `cluster: true`: a
+worker rank exposes its GPU over TCP and the head passes `--rpc host:50052`.
+It costs one small backend and one binary in the default variant, which is
+cheaper than the two builds diverging over a cmake flag.
 
 ## engine.yaml
 

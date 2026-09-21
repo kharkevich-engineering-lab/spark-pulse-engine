@@ -57,9 +57,16 @@ RUN git init -q . && \
 # every download with "HTTPS is not supported. Please rebuild with ...". The
 # first image built here had exactly that, and it is invisible until something
 # asks for a model.
+# `-DGGML_RPC=ON` builds the RPC backend and its `ggml-rpc-server`, which is
+# how llama.cpp spans two Sparks: a worker exposes its GPU over TCP and the
+# head passes `--rpc host:port`. It is off by default upstream and costs
+# nothing here -- one small backend shared object and one 2 MB binary, neither
+# loaded unless something asks for it -- so the default variant carries it too
+# rather than the build diverging for a flag.
 RUN cmake -B build \
       -DGGML_NATIVE=OFF \
       -DGGML_CUDA=ON \
+      -DGGML_RPC=ON \
       -DGGML_BACKEND_DL=ON \
       -DGGML_CPU_ALL_VARIANTS=ON \
       -DCMAKE_CUDA_ARCHITECTURES=${CUDA_DOCKER_ARCH} \
@@ -74,9 +81,15 @@ RUN cmake -B build \
 # not searched, and the process comes up with no CUDA device and no error
 # beyond a debug line. Upstream's own image does the same thing for the same
 # reason.
+#
+# `ggml-rpc-server` is the upstream target's real name (tools/rpc/CMakeLists.txt
+# sets TARGET ggml-rpc-server); `rpc-server` is what the documentation and most
+# callers say, so both names resolve rather than one of them being a puzzle at
+# launch time.
 RUN mkdir -p /out && \
     find build -name "*.so*" -exec cp -P {} /out \; && \
-    cp build/bin/llama-server build/bin/llama-cli /out/
+    cp build/bin/llama-server build/bin/llama-cli build/bin/ggml-rpc-server /out/ && \
+    ln -s ggml-rpc-server /out/rpc-server
 
 FROM ${RUNTIME_IMAGE} AS runner
 ARG BASE_IMAGE
