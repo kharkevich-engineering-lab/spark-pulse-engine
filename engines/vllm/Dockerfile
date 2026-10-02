@@ -322,6 +322,13 @@ RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
 
 # Pins go through --override so transitive deps can never swap the CUDA torch
 # for a CPU wheel. fastapi <0.137 avoids a prometheus instrumentator break.
+#
+# `;`, not `&&`, between the steps: `set -e` ignores a failure anywhere in an
+# `&&` list but its last command, so with the installs chained the step exited
+# 0 when they failed — the loop after the chain succeeded on its own. That is
+# how the 2026-09-28 image shipped with neither vllm nor flashinfer: upstream's
+# flashinfer_jit_cache had become a stub depending on a wheel the release did
+# not carry yet, uv refused to resolve, and nothing noticed.
 RUN --mount=type=bind,from=flashinfer_wheels,target=/workspace/flashinfer-wheels \
     --mount=type=bind,from=vllm_wheels,target=/workspace/vllm-wheels \
     --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
@@ -330,9 +337,9 @@ RUN --mount=type=bind,from=flashinfer_wheels,target=/workspace/flashinfer-wheels
       echo "torchvision==$(python3 -c 'import importlib.metadata as m; print(m.version("torchvision"))')"; \
       python3 -c 'import importlib.metadata as m; print("torchaudio=="+m.version("torchaudio"))' 2>/dev/null || true; \
       echo "nvidia-cutlass-dsl[cu13]==${CUTLASS_DSL_VERSION}"; \
-      echo "fastapi[standard]>=0.115.0,<0.137.0"; } > /tmp/override.txt && \
-    uv pip install /workspace/flashinfer-wheels/*.whl /workspace/vllm-wheels/*.whl --override /tmp/override.txt && \
-    uv pip install fastsafetensors instanttensor --override /tmp/override.txt && \
+      echo "fastapi[standard]>=0.115.0,<0.137.0"; } > /tmp/override.txt; \
+    uv pip install /workspace/flashinfer-wheels/*.whl /workspace/vllm-wheels/*.whl --override /tmp/override.txt; \
+    uv pip install fastsafetensors instanttensor --override /tmp/override.txt; \
     for f in flashinfer-wheels/.flashinfer-commit vllm-wheels/.vllm-commit vllm-wheels/.deepgemm-commit; do \
         n=$(basename "$f"); if [ -f "/workspace/$f" ]; then cp "/workspace/$f" "/workspace/$n"; else echo prebuilt > "/workspace/$n"; fi; \
     done; \
@@ -358,6 +365,15 @@ RUN set -eu; \
     ln -s /usr/lib/aarch64-linux-gnu/libnccl.so.2 "$SP/nvidia/nccl/lib/libnccl.so.2"
 
 COPY --from=base /workspace/.nccl-commit /workspace/.nccl-commit
+
+# The image's whole purpose, checked before anything is labelled or pushed: an
+# engine image without its engine is worse than no image, because the index
+# advertises it and every deploy then dies with "vllm: command not found".
+# find_spec rather than import — importing vllm here would initialise CUDA on
+# a builder with no GPU.
+RUN set -eu; \
+    python3 -c 'import importlib.util as u, sys; missing = [p for p in ("vllm", "flashinfer", "torch") if u.find_spec(p) is None]; sys.exit("engine image is missing: " + ", ".join(missing)) if missing else print("engine packages present")'; \
+    command -v vllm
 
 RUN set -eu; \
     { echo "engine: vllm"; \
