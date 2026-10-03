@@ -33,6 +33,15 @@ on:
 # weekly run refreshes engines/vllm only, because that variant tracks daily
 # prebuilt wheels and finishes in under an hour, while a source-mode variant
 # would spend hours rebuilding wheels nothing asked for.
+#
+# Neither automatic trigger builds a source-mode variant (wheels.mode: source,
+# today engines/vllm-b12x): no hosted runner has ever finished one. FlashInfer
+# alone takes ~63 min on the GB10's 20 cores, and on a hosted arm64 runner it
+# starves the machine until GitHub loses it ("The hosted runner lost
+# communication with the server") — on 2026-09-07, 2026-09-09 and 2026-10-02.
+# Worse than the noise: publish-index runs only on a green build-vllm, so that
+# one doomed job kept a fixed engines/vllm image out of the index. Source-mode
+# variants are built with workflow_dispatch, where somebody asked for hours.
 
 permissions:
   contents: read
@@ -80,10 +89,11 @@ jobs:
       - id: m
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
           VARIANTS: ${{ github.event_name == 'push' && steps.variants.outputs.variants || github.event.inputs.variants || 'engines/vllm' }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
-          import hashlib, json, os, pathlib, subprocess, yaml
+          import hashlib, json, os, pathlib, subprocess, sys, yaml
 
           # What a source build actually consumes: the Dockerfile and the patch
           # queue. engine.yaml is deliberately excluded — every value in it that
@@ -109,6 +119,13 @@ jobs:
               stable = {k: v for k, v in sorted(args.items()) if k not in VOLATILE}
               argsig = hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()[:12]
               mode = (yaml.safe_load(open(y)).get("wheels") or {}).get("mode", "source")
+              if mode != "prebuilt" and os.environ["EVENT"] != "workflow_dispatch":
+                  # See the note at the top: a hosted runner cannot finish it,
+                  # and its failure would keep publish-index from running.
+                  print(f"::notice::skipping {d}: wheels.mode is {mode}, which no "
+                        "hosted runner has finished; build it with workflow_dispatch",
+                        file=sys.stderr)
+                  continue
               name = get("name")
               if mode == "prebuilt":
                   keys = dict(l.split("=", 1) for l in subprocess.check_output(["python3", "scripts/fetch_wheels.py", y, "--keys"], text=True).split())
