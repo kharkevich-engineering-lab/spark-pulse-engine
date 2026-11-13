@@ -1,12 +1,17 @@
 schema_version: "1"
 engine: llama-cpp
 variant: default
-description: llama.cpp's llama-server, built from source with CUDA 13 kernels for sm_121 only.
+description: >-
+  llama.cpp's llama-server, built from source with CUDA 13: sm_121 only on
+  arm64 (DGX Spark), and the desktop and datacenter GPUs on amd64.
 image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/llama-cpp
-version: 0.1.3
+version: 0.2.0
 legacy_tags: []
-arch: [linux/arm64]
-gpu_arch: ["12.1a"]
+# One multi-platform image: a node pulls its own platform under the same tag
+# and digest, so a recipe and a deploy name one image for a Spark and an x86
+# workstation alike.
+arch: [linux/arm64, linux/amd64]
+gpu_arch: ["12.1a", "8.0", "8.6", "8.9", "9.0", "12.0"]
 
 sources:
   base: {image: nvidia/cuda:13.0.2-devel-ubuntu24.04}
@@ -20,6 +25,13 @@ sources:
 build_args:
   CUDA_DOCKER_ARCH: 121
   GCC_VERSION: 14
+
+# An x86 host is not one machine: Ampere (8.0 A100, 8.6 RTX 30xx), Ada (8.9
+# RTX 40xx, L4), Hopper (9.0) and consumer Blackwell (12.0 RTX 50xx). CUDA 13
+# has dropped everything before 7.5, so this is the useful range.
+platform_build_args:
+  linux/amd64:
+    CUDA_DOCKER_ARCH: "80;86;89;90;120"
 
 runtime:
   workdir: /workspace

@@ -109,6 +109,23 @@
         ]
       }
     },
+    "platform_build_args": {
+      "type": "object",
+      "description": "Per-platform overrides of build_args, keyed by an `arch` entry (linux/amd64). A multi-arch image compiles for different GPUs on each platform: sm_121 for a GB10, the desktop and datacenter architectures for an x86 host.",
+      "propertyNames": {
+        "pattern": "^linux/(amd64|arm64)$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      }
+    },
     "runtime": {
       "type": "object",
       "additionalProperties": false,

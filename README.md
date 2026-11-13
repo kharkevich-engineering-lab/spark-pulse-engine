@@ -1,7 +1,20 @@
 # spark-pulse-engine
 
 Engine images for [Spark Pulse](https://github.com/kharkevich-engineering-lab/spark-pulse)
-on NVIDIA DGX Spark (GB10, aarch64, CUDA 13, `sm_121`).
+on NVIDIA DGX Spark (GB10, aarch64, CUDA 13, `sm_121`), and, for the engines
+whose `arch` lists `linux/amd64`, on x86_64 hosts with a desktop or datacenter
+GPU.
+
+**Multi-arch.** An engine published for several platforms is one
+multi-platform image: the same tag and the same digest, from which each node
+pulls its own platform, so Spark Pulse pins one reference for a Spark and an
+x86 workstation alike. Each platform is compiled natively on its own runner
+(`ubuntu-24.04-arm`, `ubuntu-latest`) with its own build args —
+`platform_build_args` in `engine.yaml` overrides `build_args` per platform,
+which is how the arm64 half is compiled for `sm_121` alone and the amd64 half
+for 8.0/8.6/8.9/9.0/12.0 — and a merge job then stitches the per-platform
+digests into one index. A partial index is never published: a platform whose
+build failed fails the merge.
 
 Every serving engine that Spark Pulse can run comes from here: a Dockerfile,
 pinned sources, and an `engine.yaml` describing how the control plane should

@@ -12,10 +12,26 @@ name: build-llama-cpp
 # the per-job `needs` problem that forced build-vllm-variant.yml does not
 # arise here, and `fail-fast: false` is enough to keep one variant's failure
 # from cancelling the other.
+#
+# A variant may be published for several platforms (`arch` in its
+# engine.yaml): llama-cpp is arm64 for a DGX Spark and amd64 for an x86
+# workstation. Each platform is compiled natively on its own runner — no QEMU,
+# whose CUDA compile would take most of a day — and pushed by digest only;
+# then one `merge` job per variant stitches those digests into a single
+# multi-platform index under the variant's tags. A node pulls its own
+# platform from the same tag and digest.
 
 on:
   push:
     branches: [main]
+    paths:
+      - "engines/llama-cpp/**"
+      - "engines/llama-cpp-prism/**"
+      - ".github/workflows/build-llama-cpp.yml"
+      - "scripts/build_args.py"
+  # A PR that changes the build compiles every platform without pushing, so a
+  # broken amd64 compile is found before it reaches main.
+  pull_request:
     paths:
       - "engines/llama-cpp/**"
       - "engines/llama-cpp-prism/**"
@@ -41,78 +57,171 @@ permissions:
   packages: write
 
 jobs:
-  image:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        # The engine.yaml path is the whole identity of a variant: image, tag,
-        # build args and cache scope all come out of it via build_args.py, so
-        # nothing is spelled twice here.
-        dir: [engines/llama-cpp, engines/llama-cpp-prism]
+  # One matrix entry per (variant, platform), from each engine.yaml's `arch`,
+  # so adding a platform to a variant is an engine.yaml change and nothing
+  # here.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      count: ${{ steps.m.outputs.count }}
+      variants: ${{ steps.m.outputs.variants }}
+      push: ${{ steps.m.outputs.push }}
     steps:
       - uses: actions/checkout@v6
-      - name: Skip variants this dispatch did not ask for
-        id: want
-        run: |
-          set -eu
-          WANT="${{ github.event.inputs.variants }}"
-          if [ -z "$WANT" ]; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          elif echo " $WANT " | grep -q " ${{ matrix.dir }} "; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::${{ matrix.dir }} not in '$WANT', skipping"
-          fi
-      - uses: ./.github/actions/free-disk
-        if: steps.want.outputs.build == 'true'
-      - uses: docker/setup-buildx-action@v3
-        if: steps.want.outputs.build == 'true'
       - uses: actions/setup-python@v6
-        if: steps.want.outputs.build == 'true'
         with:
           python-version: "3.12"
       - run: pip install pyyaml
-        if: steps.want.outputs.build == 'true'
+      - id: m
+        env:
+          WANT: ${{ github.event.inputs.variants }}
+          PUSH: ${{ github.event_name != 'pull_request' && github.event.inputs.push != 'false' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          ALL = ["engines/llama-cpp", "engines/llama-cpp-prism"]
+          want = os.environ.get("WANT", "").split() or ALL
+          runners = {"linux/arm64": "ubuntu-24.04-arm", "linux/amd64": "ubuntu-latest"}
+          items, variants = [], []
+          for d in ALL:
+              if d not in want:
+                  print(f"::notice::{d} not in '{' '.join(want)}', skipping")
+                  continue
+              out = subprocess.check_output(
+                  ["python3", "scripts/build_args.py", f"{d}/engine.yaml", "--get", "platforms"],
+                  text=True,
+              )
+              name = d.split("/")[-1]
+              variants.append({"dir": d, "name": name})
+              for platform in out.split():
+                  items.append({
+                      "dir": d,
+                      "name": name,
+                      "platform": platform,
+                      "slug": platform.replace("/", "-"),
+                      "runner": runners[platform],
+                  })
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write("matrix=" + json.dumps({"include": items}) + "\n")
+              fh.write("count=" + str(len(items)) + "\n")
+              fh.write("variants=" + json.dumps({"include": variants}) + "\n")
+              fh.write("push=" + os.environ["PUSH"] + "\n")
+          print(json.dumps(items, indent=2))
+          PY
+
+  image:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    name: ${{ matrix.name }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/free-disk
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
       - uses: docker/login-action@v3
-        if: steps.want.outputs.build == 'true' && github.event_name != 'pull_request' && (github.event.inputs.push != 'false')
+        if: needs.plan.outputs.push == 'true'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
-        id: build
-        if: steps.want.outputs.build == 'true'
+      - name: Build, and push by digest
+        run: |
+          set -eu
+          Y=${{ matrix.dir }}/engine.yaml
+          IMAGE=$(python3 scripts/build_args.py $Y --get image)
+          CONTEXT=$(python3 scripts/build_args.py $Y --get context)
+          DOCKERFILE=$(python3 scripts/build_args.py $Y --get dockerfile)
+          mapfile -t ARGS < <(python3 scripts/build_args.py $Y --platform ${{ matrix.platform }})
+          # Cache scope per variant *and* platform: the two platforms compile
+          # different code for different GPUs, and one scope would have each
+          # evict the other's layers.
+          SCOPE=${{ matrix.name }}-${{ matrix.slug }}
+          if [ "${{ needs.plan.outputs.push }}" = true ]; then
+            # No tag yet: the merge job tags the multi-platform index, so a
+            # single platform is never what `:<version>` resolves to.
+            OUT=(--output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true")
+          else
+            OUT=(--output type=cacheonly)
+          fi
+          docker buildx build --platform ${{ matrix.platform }} -f "$DOCKERFILE" "${ARGS[@]}" \
+            --cache-from type=gha,scope=$SCOPE --cache-to type=gha,scope=$SCOPE,mode=max \
+            --metadata-file /tmp/meta.json "${OUT[@]}" "$CONTEXT"
+          if [ "${{ needs.plan.outputs.push }}" = true ]; then
+            mkdir -p /tmp/digests
+            DIGEST=$(python3 -c "import json; print(json.load(open('/tmp/meta.json'))['containerimage.digest'])")
+            echo "$DIGEST" > "/tmp/digests/${{ matrix.slug }}"
+            echo "pushed $IMAGE@$DIGEST for ${{ matrix.platform }}"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: needs.plan.outputs.push == 'true'
+        with:
+          name: platform-digest-${{ matrix.name }}-${{ matrix.slug }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # One index per variant, over every platform it was built for. It runs only
+  # when every platform's build succeeded: an index missing a platform would
+  # tell that platform's nodes the image does not exist for them.
+  merge:
+    needs: [plan, image]
+    if: needs.plan.outputs.push == 'true'
+    name: ${{ matrix.name }} (index)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.variants) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: platform-digest-${{ matrix.name }}-*
+          merge-multiple: true
+          path: /tmp/digests
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create the multi-platform index
         run: |
           set -eu
           Y=${{ matrix.dir }}/engine.yaml
           IMAGE=$(python3 scripts/build_args.py $Y --get image)
           VERSION=$(python3 scripts/build_args.py $Y --get version)
-          NAME=$(python3 scripts/build_args.py $Y --get name)
-          CONTEXT=$(python3 scripts/build_args.py $Y --get context)
-          DOCKERFILE=$(python3 scripts/build_args.py $Y --get dockerfile)
-          mapfile -t ARGS < <(python3 scripts/build_args.py $Y)
-          PUSH="${{ github.event_name != 'pull_request' && github.event.inputs.push != 'false' }}"
-          OUT=(--load); [ "$PUSH" = true ] && OUT=(--push)
-          # Cache scope per variant. The two builds share a Dockerfile but not
-          # a llama.cpp ref, so one scope would mean each run evicting the
-          # other's layers from the first RUN that reads LLAMA_CPP_REF.
-          docker buildx build --platform linux/arm64 -f "$DOCKERFILE" "${ARGS[@]}" \
-            --cache-from type=gha,scope=$NAME --cache-to type=gha,scope=$NAME,mode=max \
-            -t $IMAGE:$VERSION -t $IMAGE:$VERSION-${{ github.sha }} -t $IMAGE:latest \
-            --metadata-file /tmp/meta.json "${OUT[@]}" "$CONTEXT"
-          if [ "$PUSH" = true ]; then
-            mkdir -p digests
-            python3 -c "import json; d=json.load(open('/tmp/meta.json'))['containerimage.digest']; json.dump({'$IMAGE:$VERSION': d}, open('digests/$NAME.json','w'))"
-            cat digests/$NAME.json
+          WANT=$(python3 scripts/build_args.py $Y --get platforms | wc -l)
+          GOT=$(ls /tmp/digests | wc -l)
+          if [ "$GOT" != "$WANT" ]; then
+            echo "::error::$IMAGE has $GOT of $WANT platform digests; not publishing a partial index"
+            exit 1
           fi
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          SOURCES=$(for f in /tmp/digests/*; do printf '%s@%s ' "$IMAGE" "$(cat "$f")"; done)
+          docker buildx imagetools create \
+            -t $IMAGE:$VERSION -t $IMAGE:$VERSION-${{ github.sha }} -t $IMAGE:latest \
+            $SOURCES
+          docker buildx imagetools inspect $IMAGE:$VERSION
+          DIGEST=$(docker buildx imagetools inspect $IMAGE:$VERSION --format '{{json .Manifest}}' \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['digest'])")
+          mkdir -p digests
+          python3 -c "import json; json.dump({'$IMAGE:$VERSION': '$DIGEST'}, open('digests/${{ matrix.name }}.json','w'))"
+          cat digests/${{ matrix.name }}.json
       # One artifact per variant, named digest-<variant>, which is the shape
       # publish-index's registry resolve and the vllm builds already use.
       - uses: actions/upload-artifact@v4
-        if: steps.build.outputs.name != '' && hashFiles(format('digests/{0}.json', steps.build.outputs.name)) != ''
         with:
-          name: digest-${{ steps.build.outputs.name }}
+          name: digest-${{ matrix.name }}
           path: digests/
