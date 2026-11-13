@@ -1,4 +1,9 @@
 name: build-sglang
+#
+# Published for every platform in engine.yaml's `arch`: each is built natively
+# on its own runner and pushed by digest, then `merge` makes one index under
+# the version's tags, refusing a partial one. The base image is multi-platform,
+# so the two halves are the same wrapper.
 
 on:
   push:
@@ -6,6 +11,12 @@ on:
     paths:
       - "engines/sglang/**"
       - ".github/workflows/build-sglang.yml"
+  # A PR that changes the build builds every platform without pushing.
+  pull_request:
+    paths:
+      - "engines/sglang/**"
+      - ".github/workflows/build-sglang.yml"
+      - "scripts/build_args.py"
   schedule:
     - cron: "0 5 * * 1"
   workflow_dispatch:
@@ -17,15 +28,49 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  ENGINE: engines/sglang/engine.yaml
 
 permissions:
   contents: read
   packages: write
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      push: ${{ steps.m.outputs.push }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - id: m
+        env:
+          PUSH: ${{ github.event_name != 'pull_request' && github.event.inputs.push != 'false' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          runners = {"linux/arm64": "ubuntu-24.04-arm", "linux/amd64": "ubuntu-latest"}
+          platforms = subprocess.check_output(
+              ["python3", "scripts/build_args.py", os.environ["ENGINE"], "--get", "platforms"], text=True
+          ).split()
+          items = [{"platform": p, "slug": p.replace("/", "-"), "runner": runners[p]} for p in platforms]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write("matrix=" + json.dumps({"include": items}) + "\n")
+              fh.write("push=" + os.environ["PUSH"] + "\n")
+          print(json.dumps(items, indent=2))
+          PY
+
   image:
-    runs-on: ubuntu-24.04-arm
+    needs: plan
+    name: sglang (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/free-disk
@@ -35,31 +80,81 @@ jobs:
           python-version: "3.12"
       - run: pip install pyyaml
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request' && (github.event.inputs.push != 'false')
+        if: needs.plan.outputs.push == 'true'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
-        id: build
+      - name: Build, and push by digest
         run: |
           set -eu
-          Y=engines/sglang/engine.yaml
-          IMAGE=$(python3 scripts/build_args.py $Y --get image)
-          VERSION=$(python3 scripts/build_args.py $Y --get version)
-          mapfile -t ARGS < <(python3 scripts/build_args.py $Y)
-          PUSH="${{ github.event_name != 'pull_request' && github.event.inputs.push != 'false' }}"
-          OUT=(--load); [ "$PUSH" = true ] && OUT=(--push)
-          docker buildx build --platform linux/arm64 -f engines/sglang/Dockerfile "${ARGS[@]}" \
-            --cache-from type=gha,scope=sglang --cache-to type=gha,scope=sglang,mode=max \
-            -t $IMAGE:$VERSION -t $IMAGE:$VERSION-${{ github.sha }} -t $IMAGE:latest \
+          IMAGE=$(python3 scripts/build_args.py $ENGINE --get image)
+          mapfile -t ARGS < <(python3 scripts/build_args.py $ENGINE --platform ${{ matrix.platform }})
+          if [ "${{ needs.plan.outputs.push }}" = true ]; then
+            OUT=(--output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true")
+          else
+            OUT=(--output type=cacheonly)
+          fi
+          docker buildx build --platform ${{ matrix.platform }} -f engines/sglang/Dockerfile "${ARGS[@]}" \
+            --cache-from type=gha,scope=sglang-${{ matrix.slug }} \
+            --cache-to type=gha,scope=sglang-${{ matrix.slug }},mode=max \
             --metadata-file /tmp/meta.json "${OUT[@]}" engines/sglang
-          if [ "$PUSH" = true ]; then
-            mkdir -p digests
-            python3 -c "import json; d=json.load(open('/tmp/meta.json'))['containerimage.digest']; json.dump({'$IMAGE:$VERSION': d}, open('digests/sglang.json','w'))"
+          if [ "${{ needs.plan.outputs.push }}" = true ]; then
+            mkdir -p /tmp/digests
+            python3 -c "import json; print(json.load(open('/tmp/meta.json'))['containerimage.digest'])" > /tmp/digests/${{ matrix.slug }}
+            cat /tmp/digests/${{ matrix.slug }}
           fi
       - uses: actions/upload-artifact@v4
-        if: hashFiles('digests/sglang.json') != ''
+        if: needs.plan.outputs.push == 'true'
+        with:
+          name: platform-digest-sglang-${{ matrix.slug }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [plan, image]
+    if: needs.plan.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: platform-digest-sglang-*
+          merge-multiple: true
+          path: /tmp/digests
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create the multi-platform index
+        run: |
+          set -eu
+          IMAGE=$(python3 scripts/build_args.py $ENGINE --get image)
+          VERSION=$(python3 scripts/build_args.py $ENGINE --get version)
+          WANT=$(python3 scripts/build_args.py $ENGINE --get platforms | wc -l)
+          GOT=$(find /tmp/digests -type f | wc -l)
+          if [ "$GOT" != "$WANT" ]; then
+            echo "::error::$IMAGE has $GOT of $WANT platform digests; not publishing a partial index"
+            exit 1
+          fi
+          SOURCES=$(for f in /tmp/digests/*; do printf '%s@%s ' "$IMAGE" "$(cat "$f")"; done)
+          docker buildx imagetools create \
+            -t $IMAGE:$VERSION -t $IMAGE:$VERSION-${{ github.sha }} -t $IMAGE:latest \
+            $SOURCES
+          docker buildx imagetools inspect $IMAGE:$VERSION
+          DIGEST=$(docker buildx imagetools inspect $IMAGE:$VERSION --format '{{json .Manifest}}' \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['digest'])")
+          mkdir -p digests
+          python3 -c "import json; json.dump({'$IMAGE:$VERSION': '$DIGEST'}, open('digests/sglang.json','w'))"
+          cat digests/sglang.json
+      - uses: actions/upload-artifact@v4
         with:
           name: digest-sglang
           path: digests/

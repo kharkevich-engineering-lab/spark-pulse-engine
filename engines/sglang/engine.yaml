@@ -3,10 +3,13 @@ engine: sglang
 variant: default
 description: SGLang for DGX Spark, wrapping the upstream cu130 image with tiktoken files and Spark defaults.
 image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/sglang
-version: 0.1.0
+version: 0.2.0
 legacy_tags: []
-arch: [linux/arm64]
-gpu_arch: ["12.1a"]
+# One multi-platform image. The base, lmsysorg/sglang's cu130 tag, is itself
+# published for both platforms; this image only adds the tokenizer files and
+# earlyoom, so each platform's half is the same wrapper over its own base.
+arch: [linux/arm64, linux/amd64]
+gpu_arch: ["12.1a", "8.0", "8.6", "8.9", "9.0", "12.0"]
 
 sources:
   sglang: {image: lmsysorg/sglang:v0.5.10.post1-cu130}

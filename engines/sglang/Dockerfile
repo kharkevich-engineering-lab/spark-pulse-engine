@@ -14,6 +14,7 @@ ARG ENGINE_VARIANT=default
 ARG BUILD_DATE=unknown
 ARG GIT_SHA=unknown
 
+# The base is multi-platform, so --platform picks its arm64 or amd64 half.
 FROM ${SGLANG_IMAGE} AS runner
 ARG SGLANG_IMAGE
 ARG ENGINE_VERSION
