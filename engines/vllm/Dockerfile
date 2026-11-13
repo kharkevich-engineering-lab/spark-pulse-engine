@@ -478,7 +478,7 @@ RUN mkdir -p tiktoken_encodings && \
 RUN --mount=type=cache,id=uv-cache-amd64,target=/root/.cache/uv \
     set -eu; \
     INDEX="https://wheels.vllm.ai/${VLLM_REF}/cu130/vllm/"; \
-    HREF=$(curl -fsSL "$INDEX" | grep -o 'href="[^"]*manylinux[^"]*x86_64\.whl"' | head -1 | sed 's/^href="//; s/"$//'); \
+    HREF=$(wget -qO- "$INDEX" | grep -o 'href="[^"]*manylinux[^"]*x86_64\.whl"' | head -1 | sed 's/^href="//; s/"$//'); \
     if [ -z "$HREF" ]; then echo "no x86_64 wheel at $INDEX" >&2; exit 1; fi; \
     WHEEL=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.urljoin(sys.argv[1], sys.argv[2]))' "$INDEX" "$HREF"); \
     echo "vllm wheel: $WHEEL"; \
