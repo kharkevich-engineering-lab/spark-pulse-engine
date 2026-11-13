@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1.7
 #
-# llama.cpp engine image for NVIDIA DGX Spark (GB10, aarch64, CUDA 13).
+# llama.cpp engine image, CUDA 13: for NVIDIA DGX Spark (GB10, aarch64) and,
+# as the other half of one multi-platform image, x86_64 hosts with a desktop or
+# datacenter GPU. Each platform is compiled natively on its own runner, with
+# its own CUDA_DOCKER_ARCH (engine.yaml, platform_build_args).
 #
 # Built from source rather than wrapped, which is the opposite of what
 # engines/sglang does, for one reason: llama.cpp compiles in minutes, so
@@ -18,8 +21,9 @@ ARG BASE_IMAGE=nvidia/cuda:13.0.2-devel-ubuntu24.04
 ARG RUNTIME_IMAGE=nvidia/cuda:13.0.2-runtime-ubuntu24.04
 ARG LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git
 ARG LLAMA_CPP_REF=73ab7599b553c03f6f5d2db24a18ad76f2eb36a3
-#: GB10 is sm_121. Not "all supported archs": every other one is dead weight in
-#: a build that exists for one machine.
+#: GB10 is sm_121. Not "all supported archs": on arm64 every other one is dead
+#: weight in a build that exists for one machine. The amd64 build overrides
+#: this with the x86 GPUs it serves.
 ARG CUDA_DOCKER_ARCH=121
 ARG GCC_VERSION=14
 
