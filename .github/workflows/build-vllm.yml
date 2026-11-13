@@ -17,6 +17,16 @@ on:
       - ".github/workflows/build-vllm.yml"
       - "scripts/build_args.py"
       - "scripts/fetch_wheels.py"
+  # A PR that changes the build compiles every platform without pushing, so a
+  # broken amd64 image is found before it reaches main.
+  pull_request:
+    paths:
+      - "engines/vllm/**"
+      - "engines/vllm-b12x/**"
+      - ".github/workflows/build-vllm.yml"
+      - ".github/workflows/build-vllm-variant.yml"
+      - "scripts/build_args.py"
+      - "scripts/fetch_wheels.py"
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:
@@ -137,6 +147,7 @@ jobs:
                   "dir": d, "name": name, "image": get("image"), "version": get("version"),
                   "context": get("context"), "dockerfile": get("dockerfile"), "mode": mode,
                   "fi_key": fi_key, "vllm_key": vllm_key,
+                  "platforms": " ".join(get("platforms").split()),
               })
           print("matrix=" + json.dumps({"include": items}))
           # No affected variant is an ordinary outcome, not a failure: the
@@ -166,5 +177,6 @@ jobs:
       mode: ${{ matrix.mode }}
       fi_key: ${{ matrix.fi_key }}
       vllm_key: ${{ matrix.vllm_key }}
+      platforms: ${{ matrix.platforms }}
       push: ${{ github.event_name != 'pull_request' && github.event.inputs.push != 'false' }}
     secrets: inherit

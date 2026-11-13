@@ -23,6 +23,10 @@ on:
       fi_key:     {type: string, required: true}
       vllm_key:   {type: string, required: true}
       push:       {type: boolean, required: true}
+      # Space-separated `arch` entries from engine.yaml. linux/arm64 is the
+      # Spark image built from the wheels below; linux/amd64 is upstream's
+      # x86_64 wheel (Dockerfile, runner-upstream) and needs none of them.
+      platforms:  {type: string, required: false, default: "linux/arm64"}
 
 env:
   REGISTRY: ghcr.io
@@ -139,13 +143,17 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push runner image
-        id: build
+      - name: Build the arm64 runner, and push it by digest
         run: |
           set -eu
-          mapfile -t ARGS < <(python3 scripts/build_args.py ${{ inputs.dir }}/engine.yaml)
-          PUSH="${{ inputs.push }}"
-          OUT=(--load); [ "$PUSH" = true ] && OUT=(--push)
+          mapfile -t ARGS < <(python3 scripts/build_args.py ${{ inputs.dir }}/engine.yaml --platform linux/arm64)
+          # No tag here: the merge job tags the multi-platform index, so a
+          # single platform is never what `:<version>` resolves to.
+          if [ "${{ inputs.push }}" = true ]; then
+            OUT=(--output "type=image,name=${{ inputs.image }},push-by-digest=true,name-canonical=true,push=true")
+          else
+            OUT=(--output type=cacheonly)
+          fi
           docker buildx build --platform linux/arm64 -f ${{ inputs.dockerfile }} "${ARGS[@]}" \
             --build-arg BUILD_JOBS=$(nproc) \
             --build-context flashinfer_wheels=wheels/${{ inputs.name }}/flashinfer \
@@ -153,20 +161,111 @@ jobs:
             --cache-from type=gha,scope=vllm-base \
             --cache-from type=gha,scope=${{ inputs.name }}-runner --cache-to type=gha,scope=${{ inputs.name }}-runner,mode=max \
             --target runner \
-            -t ${{ inputs.image }}:${{ inputs.version }} \
-            -t ${{ inputs.image }}:${{ inputs.version }}-${{ github.sha }} \
-            -t ${{ inputs.image }}:latest \
             --metadata-file /tmp/meta.json "${OUT[@]}" ${{ inputs.context }}
-          if [ "$PUSH" = true ]; then
-            echo "digest=$(python3 -c 'import json; print(json.load(open("/tmp/meta.json"))["containerimage.digest"])')" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.push }}" = true ]; then
+            mkdir -p /tmp/digests
+            python3 -c 'import json; print(json.load(open("/tmp/meta.json"))["containerimage.digest"])' > /tmp/digests/linux-arm64
+            cat /tmp/digests/linux-arm64
           fi
+      - uses: actions/upload-artifact@v4
+        if: inputs.push
+        with:
+          name: platform-digest-${{ inputs.name }}-linux-arm64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # The amd64 half: upstream's x86_64 wheel for the same commit, installed on a
+  # native x86 runner. It needs none of the wheels above.
+  image-amd64:
+    if: contains(inputs.platforms, 'linux/amd64')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/free-disk
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - uses: docker/login-action@v3
+        if: inputs.push
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build the amd64 runner, and push it by digest
+        run: |
+          set -eu
+          mapfile -t ARGS < <(python3 scripts/build_args.py ${{ inputs.dir }}/engine.yaml --platform linux/amd64)
+          if [ "${{ inputs.push }}" = true ]; then
+            OUT=(--output "type=image,name=${{ inputs.image }},push-by-digest=true,name-canonical=true,push=true")
+          else
+            OUT=(--output type=cacheonly)
+          fi
+          docker buildx build --platform linux/amd64 -f ${{ inputs.dockerfile }} "${ARGS[@]}" \
+            --cache-from type=gha,scope=${{ inputs.name }}-runner-amd64 \
+            --cache-to type=gha,scope=${{ inputs.name }}-runner-amd64,mode=max \
+            --target runner \
+            --metadata-file /tmp/meta.json "${OUT[@]}" ${{ inputs.context }}
+          if [ "${{ inputs.push }}" = true ]; then
+            mkdir -p /tmp/digests
+            python3 -c 'import json; print(json.load(open("/tmp/meta.json"))["containerimage.digest"])' > /tmp/digests/linux-amd64
+            cat /tmp/digests/linux-amd64
+          fi
+      - uses: actions/upload-artifact@v4
+        if: inputs.push
+        with:
+          name: platform-digest-${{ inputs.name }}-linux-amd64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # One index over every platform the variant declares. It refuses a partial
+  # index: a platform whose build failed would otherwise tell that platform's
+  # nodes the image does not exist for them.
+  merge:
+    needs: [image, image-amd64]
+    if: always() && inputs.push && needs.image.result == 'success' && (needs.image-amd64.result == 'success' || needs.image-amd64.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: platform-digest-${{ inputs.name }}-*
+          merge-multiple: true
+          path: /tmp/digests
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create the multi-platform index
+        id: index
+        run: |
+          set -eu
+          IMAGE=${{ inputs.image }}
+          VERSION=${{ inputs.version }}
+          WANT=$(echo "${{ inputs.platforms }}" | wc -w)
+          GOT=$(ls /tmp/digests | wc -l)
+          if [ "$GOT" != "$WANT" ]; then
+            echo "::error::$IMAGE has $GOT of $WANT platform digests; not publishing a partial index"
+            exit 1
+          fi
+          SOURCES=$(for f in /tmp/digests/*; do printf '%s@%s ' "$IMAGE" "$(cat "$f")"; done)
+          docker buildx imagetools create \
+            -t $IMAGE:$VERSION -t $IMAGE:$VERSION-${{ github.sha }} -t $IMAGE:latest \
+            $SOURCES
+          docker buildx imagetools inspect $IMAGE:$VERSION
+          DIGEST=$(docker buildx imagetools inspect $IMAGE:$VERSION --format '{{json .Manifest}}' \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['digest'])")
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
       - name: Record digest
-        if: steps.build.outputs.digest != ''
         run: |
           mkdir -p digests
-          echo '{"${{ inputs.image }}:${{ inputs.version }}": "${{ steps.build.outputs.digest }}"}' > digests/${{ inputs.name }}.json
+          echo '{"${{ inputs.image }}:${{ inputs.version }}": "${{ steps.index.outputs.digest }}"}' > digests/${{ inputs.name }}.json
       - uses: actions/upload-artifact@v4
-        if: steps.build.outputs.digest != ''
         with:
           name: digest-${{ inputs.name }}
           path: digests/

@@ -16,6 +16,14 @@ for 8.0/8.6/8.9/9.0/12.0 — and a merge job then stitches the per-platform
 digests into one index. A partial index is never published: a platform whose
 build failed fails the merge.
 
+**vLLM's two halves are different builds of the same commit.** The arm64
+image is the Spark build: eugr's prebuilt wheels with the patch queue, our
+NCCL, `sm_121`. The amd64 image (`runner-upstream` in the Dockerfile, chosen by
+`VLLM_RUNNER=upstream` in `platform_build_args`) installs upstream's x86_64
+cu130 wheel for the same `VLLM_REF`, with the torch that commit pins, and
+applies no patches: they are GB10/sm12x fixes. `build-metadata.yaml` in the
+image says which one you have.
+
 Every serving engine that Spark Pulse can run comes from here: a Dockerfile,
 pinned sources, and an `engine.yaml` describing how the control plane should
 run the image. Spark Pulse never builds images itself; it reads the published

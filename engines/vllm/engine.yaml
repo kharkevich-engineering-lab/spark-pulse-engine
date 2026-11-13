@@ -1,12 +1,18 @@
 schema_version: "1"
 engine: vllm
 variant: default
-description: vLLM built from source for DGX Spark (GB10, sm_121, CUDA 13) with the Spark patch queue.
+description: >-
+  vLLM for DGX Spark (GB10, sm_121, CUDA 13) with the Spark patch queue, and,
+  in the same multi-platform image, upstream's x86_64 cu130 build of the same
+  commit for an x86 host with an NVIDIA GPU.
 image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/vllm
-version: 0.1.0
+version: 0.2.0
 legacy_tags: [vllm-node]
-arch: [linux/arm64]
-gpu_arch: ["12.1a"]
+# One multi-platform image. arm64 is the Spark build below (these wheels, our
+# NCCL, the patch queue, sm_121); amd64 is upstream's x86_64 cu130 wheel for
+# the same vLLM commit, unpatched (Dockerfile, runner-upstream).
+arch: [linux/arm64, linux/amd64]
+gpu_arch: ["12.1a", "8.0", "8.6", "8.9", "9.0", "12.0"]
 
 sources:
   base: {image: nvidia/cuda:13.0.2-devel-ubuntu24.04}
@@ -30,6 +36,15 @@ wheels:
 build_args:
   TORCH_CUDA_ARCH_LIST: 12.1a
   VLLM_PRESERVE_SM12X_TARGET: 0
+
+platform_build_args:
+  linux/amd64:
+    VLLM_RUNNER: upstream
+    # What FlashInfer and Triton JIT for at runtime on an x86 host: Ampere,
+    # Ada, Hopper, consumer Blackwell. Space-separated, not `;`: the image
+    # copies this into FLASHINFER_CUDA_ARCH_LIST, which FlashInfer splits on
+    # spaces only (a `;` list fails its import), and torch takes either.
+    TORCH_CUDA_ARCH_LIST: "8.0 8.6 8.9 9.0 12.0"
 
 runtime:
   python: "3.12"

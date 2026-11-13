@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.7
 #
-# vLLM engine image for NVIDIA DGX Spark (GB10, aarch64, CUDA 13, sm_121).
+# vLLM engine image for NVIDIA DGX Spark (GB10, aarch64, CUDA 13, sm_121), and,
+# as the other half of one multi-platform image, x86_64 hosts with an NVIDIA
+# GPU.
 #
 # Stages
 #   base                 CUDA devel + torch stack + NCCL built from source
@@ -10,13 +12,21 @@
 #   vllm-export          scratch image holding that wheel
 #   flashinfer_wheels    defaults to flashinfer-export; override with --build-context
 #   vllm_wheels          defaults to vllm-export;       override with --build-context
-#   runner               final image
+#   runner-spark         the arm64 image: these wheels, our NCCL, sm_121
+#   runner-upstream      the amd64 image: upstream's x86_64 cu130 wheel for the
+#                        same pinned vLLM commit, unpatched
+#   runner               the one VLLM_RUNNER names (spark unless overridden)
 #
 # Every source is pinned through build args; the values that matter live in
 # engine.yaml and are turned into --build-arg flags by scripts/build_args.py.
 # Derived from eugr/spark-vllm-docker (MIT); see patches/NOTICE.
 
 ARG BASE_IMAGE=nvidia/cuda:13.0.2-devel-ubuntu24.04
+#: Which runner stage the `runner` target is. `spark` everywhere but amd64,
+#: where engine.yaml's platform_build_args sets `upstream`. BuildKit builds
+#: only the stages the chosen runner reaches, so the amd64 build never
+#: compiles NCCL or touches the aarch64 wheels.
+ARG VLLM_RUNNER=spark
 ARG BUILD_JOBS=4
 ARG TORCH_VERSION=2.13.0
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu130
@@ -261,9 +271,9 @@ FROM flashinfer-export AS flashinfer_wheels
 FROM vllm-export AS vllm_wheels
 
 # =========================================================
-# runner
+# runner-spark (arm64)
 # =========================================================
-FROM ${BASE_IMAGE} AS runner
+FROM ${BASE_IMAGE} AS runner-spark
 ARG BUILD_JOBS
 ARG TORCH_VERSION
 ARG TORCH_INDEX
@@ -410,3 +420,114 @@ LABEL org.opencontainers.image.title="spark-pulse-engine/vllm" \
 
 # No ENTRYPOINT/CMD on purpose: the control plane starts an idle container and
 # execs the serve command.
+
+
+# =========================================================
+# runner-upstream (amd64)
+# =========================================================
+# An x86_64 host is not a GB10, and nothing in the spark runner is for it:
+# eugr's wheels are aarch64 builds for sm_121, and the NCCL above is compiled
+# for the Spark's ConnectX. Upstream publishes a wheel for every commit of
+# main, x86_64 and cu130 included, so the amd64 image installs *that* — the
+# same VLLM_REF the arm64 image is built from — with the torch it asks for
+# from PyTorch's cu130 index, and FlashInfer and NCCL as its own dependencies.
+#
+# What differs, and is meant to: the Spark patch queue is not applied (its
+# patches are GB10/sm12x fixes, and the upstream wheel is unpatched), and the
+# torch version is whatever this vLLM commit pins rather than TORCH_VERSION.
+FROM ${BASE_IMAGE} AS runner-upstream
+ARG VLLM_REF
+ARG TORCH_INDEX
+ARG TORCH_CUDA_ARCH_LIST
+ARG ENGINE_VERSION
+ARG ENGINE_VARIANT
+ARG BUILD_DATE
+ARG GIT_SHA
+ARG BASE_IMAGE
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_CACHE_DIR=/root/.cache/pip \
+    UV_CACHE_DIR=/root/.cache/uv \
+    UV_SYSTEM_PYTHON=1 \
+    UV_BREAK_SYSTEM_PACKAGES=1 \
+    UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=600 \
+    UV_HTTP_RETRIES=10 \
+    VLLM_BASE_DIR=/workspace/vllm
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-dev curl git wget \
+      libibverbs1 rdma-core libxcb1 earlyoom && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip install uv
+
+WORKDIR ${VLLM_BASE_DIR}
+
+RUN mkdir -p tiktoken_encodings && \
+    wget -qO tiktoken_encodings/o200k_base.tiktoken "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken" && \
+    wget -qO tiktoken_encodings/cl100k_base.tiktoken "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
+
+# The wheel itself, by URL, from the commit's own index (whose links are
+# relative, so they are resolved against it, as pip would): naming `vllm` with
+# that index as an *extra* one let the resolver take PyPI's newest release
+# instead (a first build installed 0.33.0, not this commit). Its torch then
+# comes from PyTorch's cu130 index — unsafe-best-match is what lets it, rather
+# than PyPI's default CUDA 12 build of the same version.
+RUN --mount=type=cache,id=uv-cache-amd64,target=/root/.cache/uv \
+    set -eu; \
+    INDEX="https://wheels.vllm.ai/${VLLM_REF}/cu130/vllm/"; \
+    HREF=$(wget -qO- "$INDEX" | grep -o 'href="[^"]*manylinux[^"]*x86_64\.whl"' | head -1 | sed 's/^href="//; s/"$//'); \
+    if [ -z "$HREF" ]; then echo "no x86_64 wheel at $INDEX" >&2; exit 1; fi; \
+    WHEEL=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.urljoin(sys.argv[1], sys.argv[2]))' "$INDEX" "$HREF"); \
+    echo "vllm wheel: $WHEEL"; \
+    echo "fastapi[standard]>=0.115.0,<0.137.0" > /tmp/override.txt; \
+    uv pip install "vllm @ $WHEEL" \
+        --extra-index-url "${TORCH_INDEX}" \
+        --index-strategy unsafe-best-match \
+        --override /tmp/override.txt; \
+    uv pip install fastsafetensors instanttensor --override /tmp/override.txt; \
+    echo "${VLLM_REF}" > /workspace/.vllm-commit
+
+# The same check the arm64 image makes: an engine image without its engine is
+# worse than none.
+RUN set -eu; \
+    python3 -c 'import importlib.util as u, sys; missing = [p for p in ("vllm", "flashinfer", "torch") if u.find_spec(p) is None]; sys.exit("engine image is missing: " + ", ".join(missing)) if missing else print("engine packages present")'; \
+    command -v vllm
+
+RUN set -eu; \
+    { echo "engine: vllm"; \
+      echo "variant: ${ENGINE_VARIANT}"; \
+      echo "platform: linux/amd64"; \
+      echo "version: ${ENGINE_VERSION}"; \
+      echo "build_date: ${BUILD_DATE}"; \
+      echo "git_sha: ${GIT_SHA}"; \
+      echo "base_image: ${BASE_IMAGE}"; \
+      echo "gpu_arch: ${TORCH_CUDA_ARCH_LIST}"; \
+      echo "torch: $(python3 -c 'import torch; print(torch.__version__)')"; \
+      echo "vllm: $(python3 -c 'import importlib.metadata as m; print(m.version("vllm"))')"; \
+      echo "vllm_ref: ${VLLM_REF}"; \
+      echo "vllm_source: https://wheels.vllm.ai/${VLLM_REF}/cu130 (upstream, unpatched)"; \
+      echo "flashinfer: $(python3 -c 'import importlib.metadata as m; print(m.version("flashinfer-python"))' 2>/dev/null || echo unknown)"; \
+    } > /workspace/build-metadata.yaml && cat /workspace/build-metadata.yaml
+
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
+    FLASHINFER_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
+    TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas \
+    TIKTOKEN_ENCODINGS_BASE=/workspace/vllm/tiktoken_encodings \
+    PATH=/workspace/vllm:$PATH
+
+LABEL org.opencontainers.image.title="spark-pulse-engine/vllm" \
+      org.opencontainers.image.source="https://github.com/kharkevich-engineering-lab/spark-pulse-engine" \
+      org.opencontainers.image.version="${ENGINE_VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      io.spark-pulse.engine="vllm" \
+      io.spark-pulse.variant="${ENGINE_VARIANT}"
+
+
+# =========================================================
+# runner
+# =========================================================
+# The target every build names; which runner it is depends on the platform.
+FROM runner-${VLLM_RUNNER} AS runner
