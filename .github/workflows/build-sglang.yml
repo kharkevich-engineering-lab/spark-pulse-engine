@@ -1,26 +1,31 @@
 name: build-sglang
 #
-# Published for every platform in engine.yaml's `arch`: each is built natively
-# on its own runner and pushed by digest, then `merge` makes one index under
-# the version's tags, refusing a partial one. The base image is multi-platform,
-# so the two halves are the same wrapper.
+# Published for every platform in each variant's `engine.yaml`: each is built
+# natively on its own runner and pushed by digest, then `merge` makes one
+# index under that variant's version tags, refusing a partial image.
 
 on:
   push:
     branches: [main]
     paths:
       - "engines/sglang/**"
+      - "engines/sglang-inkling-2-mini/**"
       - ".github/workflows/build-sglang.yml"
+      - "scripts/build_args.py"
   # A PR that changes the build builds every platform without pushing.
   pull_request:
     paths:
       - "engines/sglang/**"
+      - "engines/sglang-inkling-2-mini/**"
       - ".github/workflows/build-sglang.yml"
       - "scripts/build_args.py"
   schedule:
     - cron: "0 5 * * 1"
   workflow_dispatch:
     inputs:
+      variants:
+        description: "Space-separated engine dirs to build"
+        default: "engines/sglang engines/sglang-inkling-2-mini"
       push:
         description: "Push to ghcr.io"
         type: boolean
@@ -28,7 +33,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  ENGINE: engines/sglang/engine.yaml
 
 permissions:
   contents: read
@@ -39,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
+      variants: ${{ steps.m.outputs.variants }}
       push: ${{ steps.m.outputs.push }}
     steps:
       - uses: actions/checkout@v6
@@ -49,23 +54,34 @@ jobs:
       - id: m
         env:
           PUSH: ${{ github.event_name != 'pull_request' && github.event.inputs.push != 'false' }}
+          WANT: ${{ github.event.inputs.variants }}
         run: |
           python3 - <<'PY'
           import json, os, subprocess
           runners = {"linux/arm64": "ubuntu-24.04-arm", "linux/amd64": "ubuntu-latest"}
-          platforms = subprocess.check_output(
-              ["python3", "scripts/build_args.py", os.environ["ENGINE"], "--get", "platforms"], text=True
-          ).split()
-          items = [{"platform": p, "slug": p.replace("/", "-"), "runner": runners[p]} for p in platforms]
+          all_variants = ["engines/sglang", "engines/sglang-inkling-2-mini"]
+          wanted = os.environ.get("WANT", "").split() or all_variants
+          items, variants = [], []
+          for directory in all_variants:
+              if directory not in wanted:
+                  continue
+              name = directory.rsplit("/", 1)[-1]
+              variants.append({"dir": directory, "name": name})
+              platforms = subprocess.check_output(
+                  ["python3", "scripts/build_args.py", f"{directory}/engine.yaml", "--get", "platforms"], text=True
+              ).split()
+              items.extend({"dir": directory, "name": name, "platform": p,
+                            "slug": p.replace("/", "-"), "runner": runners[p]} for p in platforms)
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write("matrix=" + json.dumps({"include": items}) + "\n")
+              fh.write("variants=" + json.dumps({"include": variants}) + "\n")
               fh.write("push=" + os.environ["PUSH"] + "\n")
           print(json.dumps(items, indent=2))
           PY
 
   image:
     needs: plan
-    name: sglang (${{ matrix.platform }})
+    name: ${{ matrix.name }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -88,17 +104,20 @@ jobs:
       - name: Build, and push by digest
         run: |
           set -eu
-          IMAGE=$(python3 scripts/build_args.py $ENGINE --get image)
-          mapfile -t ARGS < <(python3 scripts/build_args.py $ENGINE --platform ${{ matrix.platform }})
+          Y=${{ matrix.dir }}/engine.yaml
+          IMAGE=$(python3 scripts/build_args.py $Y --get image)
+          CONTEXT=$(python3 scripts/build_args.py $Y --get context)
+          DOCKERFILE=$(python3 scripts/build_args.py $Y --get dockerfile)
+          mapfile -t ARGS < <(python3 scripts/build_args.py $Y --platform ${{ matrix.platform }})
           if [ "${{ needs.plan.outputs.push }}" = true ]; then
             OUT=(--output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true")
           else
             OUT=(--output type=cacheonly)
           fi
-          docker buildx build --platform ${{ matrix.platform }} -f engines/sglang/Dockerfile "${ARGS[@]}" \
-            --cache-from type=gha,scope=sglang-${{ matrix.slug }} \
-            --cache-to type=gha,scope=sglang-${{ matrix.slug }},mode=max \
-            --metadata-file /tmp/meta.json "${OUT[@]}" engines/sglang
+          docker buildx build --platform ${{ matrix.platform }} -f "$DOCKERFILE" "${ARGS[@]}" \
+            --cache-from type=gha,scope=${{ matrix.name }}-${{ matrix.slug }} \
+            --cache-to type=gha,scope=${{ matrix.name }}-${{ matrix.slug }},mode=max \
+            --metadata-file /tmp/meta.json "${OUT[@]}" "$CONTEXT"
           if [ "${{ needs.plan.outputs.push }}" = true ]; then
             mkdir -p /tmp/digests
             python3 -c "import json; print(json.load(open('/tmp/meta.json'))['containerimage.digest'])" > /tmp/digests/${{ matrix.slug }}
@@ -107,7 +126,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: needs.plan.outputs.push == 'true'
         with:
-          name: platform-digest-sglang-${{ matrix.slug }}
+          name: platform-digest-${{ matrix.name }}-${{ matrix.slug }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -115,7 +134,11 @@ jobs:
   merge:
     needs: [plan, image]
     if: needs.plan.outputs.push == 'true'
+    name: ${{ matrix.name }} (index)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.variants) }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -124,7 +147,7 @@ jobs:
       - run: pip install pyyaml
       - uses: actions/download-artifact@v4
         with:
-          pattern: platform-digest-sglang-*
+          pattern: platform-digest-${{ matrix.name }}-*
           merge-multiple: true
           path: /tmp/digests
       - uses: docker/setup-buildx-action@v3
@@ -136,9 +159,10 @@ jobs:
       - name: Create the multi-platform index
         run: |
           set -eu
-          IMAGE=$(python3 scripts/build_args.py $ENGINE --get image)
-          VERSION=$(python3 scripts/build_args.py $ENGINE --get version)
-          WANT=$(python3 scripts/build_args.py $ENGINE --get platforms | wc -l)
+          Y=${{ matrix.dir }}/engine.yaml
+          IMAGE=$(python3 scripts/build_args.py $Y --get image)
+          VERSION=$(python3 scripts/build_args.py $Y --get version)
+          WANT=$(python3 scripts/build_args.py $Y --get platforms | wc -l)
           GOT=$(find /tmp/digests -type f | wc -l)
           if [ "$GOT" != "$WANT" ]; then
             echo "::error::$IMAGE has $GOT of $WANT platform digests; not publishing a partial index"
@@ -152,9 +176,9 @@ jobs:
           DIGEST=$(docker buildx imagetools inspect $IMAGE:$VERSION --format '{{json .Manifest}}' \
             | python3 -c "import json,sys; print(json.load(sys.stdin)['digest'])")
           mkdir -p digests
-          python3 -c "import json; json.dump({'$IMAGE:$VERSION': '$DIGEST'}, open('digests/sglang.json','w'))"
-          cat digests/sglang.json
+          python3 -c "import json; json.dump({'$IMAGE:$VERSION': '$DIGEST'}, open('digests/${{ matrix.name }}.json','w'))"
+          cat digests/${{ matrix.name }}.json
       - uses: actions/upload-artifact@v4
         with:
-          name: digest-sglang
+          name: digest-${{ matrix.name }}
           path: digests/

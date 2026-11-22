@@ -1,0 +1,56 @@
+schema_version: "1"
+engine: sglang
+variant: inkling-2-mini
+description: SGLang's upstream Inkling 2 Mini image, wrapped with Spark Pulse runtime defaults for DGX Spark.
+image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/sglang-inkling-2-mini
+version: 0.1.0
+legacy_tags: []
+# Inkling 2 Mini's upstream image is verified for DGX Spark. Do not claim an
+# x86 image until that upstream tag is published and tested there too.
+arch: [linux/arm64]
+gpu_arch: ["12.1a"]
+
+sources:
+  sglang: {image: lmsysorg/sglang:inkling-2-mini}
+
+runtime:
+  python: "3.12"
+  workdir: /workspace
+  serve: python3 -m sglang.launch_server
+  model_arg: --model-path
+  readiness: /health
+  models_endpoint: /v1/models
+  metrics: /metrics
+  ports: {api: 30000, rendezvous: 50000}
+  # Match the standard SGLang image contract: Spark Pulse runs the serving
+  # process as the operator, so its home and cache must be traversable.
+  cache_mounts: [~/.cache/huggingface, ~/tiktoken_encodings]
+  env:
+    HF_HOME: /home/spark/.cache/huggingface
+    TIKTOKEN_ENCODINGS_BASE: /home/spark/tiktoken_encodings
+    NCCL_IB_DISABLE: "0"
+    NCCL_NET_GDR_LEVEL: "5"
+    NCCL_TIMEOUT: "1200000"
+  container:
+    privileged: false
+    ipc_host: true
+    network_host: true
+    shm_size_gb: 32
+    devices: [/dev/infiniband]
+    ulimits: {memlock: "-1", stack: "67108864"}
+    keepalive: sleep infinity
+  multi_node:
+    style: sglang
+    extra_args: [--enable-dp-attention]
+  param_flags:
+    port: --port
+    host: --host
+    tensor_parallel: --tp
+    pipeline_parallel: --pp-size
+    gpu_memory_utilization: --mem-fraction-static
+    max_model_len: --context-length
+    max_num_seqs: --max-running-requests
+
+capabilities: {mods: false, pr_mods: false, solo: true, cluster: false, mesh: false}
+verified:
+  - {nodes: 1, tp: 1, model: OpenUncensored/Inkling-2-Mini-Uncensored, date: "2026-11-22", notes: "Tested on a DGX Spark with the dedicated lmsysorg/sglang:inkling-2-mini image."}
