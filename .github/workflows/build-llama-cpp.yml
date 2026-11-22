@@ -188,7 +188,7 @@ jobs:
       - run: pip install pyyaml
       - uses: actions/download-artifact@v4
         with:
-          pattern: platform-digest-${{ matrix.name }}-*
+          pattern: platform-digest-${{ matrix.name }}-linux-*
           merge-multiple: true
           path: /tmp/digests
       - uses: docker/setup-buildx-action@v3

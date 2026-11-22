@@ -13,8 +13,9 @@
 #   flashinfer_wheels    defaults to flashinfer-export; override with --build-context
 #   vllm_wheels          defaults to vllm-export;       override with --build-context
 #   runner-spark         the arm64 image: these wheels, our NCCL, sm_121
-#   runner-upstream      the amd64 image: upstream's x86_64 cu130 wheel for the
-#                        same pinned vLLM commit, unpatched
+#   runner-upstream      the amd64 image: upstream's x86_64 wheel (variant
+#                        VLLM_WHEEL_VARIANT) for the same pinned vLLM commit,
+#                        unpatched
 #   runner               the one VLLM_RUNNER names (spark unless overridden)
 #
 # Every source is pinned through build args; the values that matter live in
@@ -28,9 +29,9 @@ ARG BASE_IMAGE=nvidia/cuda:13.0.2-devel-ubuntu24.04
 #: compiles NCCL or touches the aarch64 wheels.
 ARG VLLM_RUNNER=spark
 ARG BUILD_JOBS=4
-ARG TORCH_VERSION=2.13.0
+ARG TORCH_VERSION=2.14.0
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu130
-ARG TORCHVISION_VERSION=0.28.0
+ARG TORCHVISION_VERSION=0.29.0
 ARG TORCHAUDIO_VERSION=2.11.0
 ARG CUTLASS_DSL_VERSION=4.7.0
 ARG TORCH_CUDA_ARCH_LIST=12.1a
@@ -42,6 +43,8 @@ ARG FLASHINFER_REPO=https://github.com/flashinfer-ai/flashinfer.git
 ARG FLASHINFER_REF=main
 ARG VLLM_REPO=https://github.com/vllm-project/vllm.git
 ARG VLLM_REF=main
+#: Which of wheels.vllm.ai/<commit>/'s CUDA variants runner-upstream installs.
+ARG VLLM_WHEEL_VARIANT=cu130
 ARG DEEPGEMM_REPO=https://github.com/deepseek-ai/DeepGEMM.git
 ARG DEEPGEMM_REF=a6b593d2826719dcf4892609af7b84ee23aaf32a
 
@@ -428,15 +431,17 @@ LABEL org.opencontainers.image.title="spark-pulse-engine/vllm" \
 # An x86_64 host is not a GB10, and nothing in the spark runner is for it:
 # eugr's wheels are aarch64 builds for sm_121, and the NCCL above is compiled
 # for the Spark's ConnectX. Upstream publishes a wheel for every commit of
-# main, x86_64 and cu130 included, so the amd64 image installs *that* — the
-# same VLLM_REF the arm64 image is built from — with the torch it asks for
-# from PyTorch's cu130 index, and FlashInfer and NCCL as its own dependencies.
+# main, x86_64 included, so the amd64 image installs *that* — the same
+# VLLM_REF the arm64 image is built from, in the CUDA variant
+# VLLM_WHEEL_VARIANT names — with the torch it asks for from TORCH_INDEX, and
+# FlashInfer and NCCL as its own dependencies.
 #
 # What differs, and is meant to: the Spark patch queue is not applied (its
 # patches are GB10/sm12x fixes, and the upstream wheel is unpatched), and the
 # torch version is whatever this vLLM commit pins rather than TORCH_VERSION.
 FROM ${BASE_IMAGE} AS runner-upstream
 ARG VLLM_REF
+ARG VLLM_WHEEL_VARIANT
 ARG TORCH_INDEX
 ARG TORCH_CUDA_ARCH_LIST
 ARG ENGINE_VERSION
@@ -473,11 +478,11 @@ RUN mkdir -p tiktoken_encodings && \
 # relative, so they are resolved against it, as pip would): naming `vllm` with
 # that index as an *extra* one let the resolver take PyPI's newest release
 # instead (a first build installed 0.33.0, not this commit). Its torch then
-# comes from PyTorch's cu130 index — unsafe-best-match is what lets it, rather
+# comes from TORCH_INDEX — unsafe-best-match is what lets it, rather
 # than PyPI's default CUDA 12 build of the same version.
 RUN --mount=type=cache,id=uv-cache-amd64,target=/root/.cache/uv \
     set -eu; \
-    INDEX="https://wheels.vllm.ai/${VLLM_REF}/cu130/vllm/"; \
+    INDEX="https://wheels.vllm.ai/${VLLM_REF}/${VLLM_WHEEL_VARIANT}/vllm/"; \
     HREF=$(wget -qO- "$INDEX" | grep -o 'href="[^"]*manylinux[^"]*x86_64\.whl"' | head -1 | sed 's/^href="//; s/"$//'); \
     if [ -z "$HREF" ]; then echo "no x86_64 wheel at $INDEX" >&2; exit 1; fi; \
     WHEEL=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.urljoin(sys.argv[1], sys.argv[2]))' "$INDEX" "$HREF"); \
@@ -508,7 +513,7 @@ RUN set -eu; \
       echo "torch: $(python3 -c 'import torch; print(torch.__version__)')"; \
       echo "vllm: $(python3 -c 'import importlib.metadata as m; print(m.version("vllm"))')"; \
       echo "vllm_ref: ${VLLM_REF}"; \
-      echo "vllm_source: https://wheels.vllm.ai/${VLLM_REF}/cu130 (upstream, unpatched)"; \
+      echo "vllm_source: https://wheels.vllm.ai/${VLLM_REF}/${VLLM_WHEEL_VARIANT} (upstream, unpatched)"; \
       echo "flashinfer: $(python3 -c 'import importlib.metadata as m; print(m.version("flashinfer-python"))' 2>/dev/null || echo unknown)"; \
     } > /workspace/build-metadata.yaml && cat /workspace/build-metadata.yaml
 

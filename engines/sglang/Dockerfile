@@ -7,7 +7,7 @@
 # This stage adds what the control plane expects from every engine image:
 # offline tiktoken files, earlyoom, provenance metadata, no entrypoint.
 
-ARG SGLANG_IMAGE=lmsysorg/sglang:v0.5.10.post1-cu130
+ARG SGLANG_IMAGE=lmsysorg/sglang:v0.5.23-cu130
 
 ARG ENGINE_VERSION=0.0.0
 ARG ENGINE_VARIANT=default

@@ -6,22 +6,30 @@ description: >-
   in the same multi-platform image, upstream's x86_64 cu130 build of the same
   commit for an x86 host with an NVIDIA GPU.
 image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/vllm
-version: 0.2.0
+version: 0.3.0
 legacy_tags: [vllm-node]
 # One multi-platform image. arm64 is the Spark build below (these wheels, our
-# NCCL, the patch queue, sm_121); amd64 is upstream's x86_64 cu130 wheel for
-# the same vLLM commit, unpatched (Dockerfile, runner-upstream).
+# NCCL, the patch queue, sm_121); amd64 is upstream's x86_64 wheel for the
+# same vLLM commit, unpatched (Dockerfile, runner-upstream).
 arch: [linux/arm64, linux/amd64]
 gpu_arch: ["12.1a", "8.0", "8.6", "8.9", "9.0", "12.0"]
 
 sources:
   base: {image: nvidia/cuda:13.0.2-devel-ubuntu24.04}
-  vllm: {repo: https://github.com/vllm-project/vllm.git, ref: 21a22110404d98dcab5f51cd90e9acb0acc15e47}
-  flashinfer: {repo: https://github.com/flashinfer-ai/flashinfer.git, ref: 03d8b2cd33459b5dc66c6187a2b47e02f83a2fe3}
-  nccl: {repo: https://github.com/NVIDIA/nccl.git, ref: fd168324a3dc0c9080fd4881b6c7f4bb252a95a2}
+  # The main commit eugr's prebuilt-vllm-current (0.34.0rc1.dev935+g885cce754,
+  # 2026-11-19) was built from: dev932 is fd2b7ac, and the three extra
+  # commits are the PRs eugr merges on top. The amd64 half installs
+  # upstream's wheel for this same commit.
+  vllm: {repo: https://github.com/vllm-project/vllm.git, ref: fd2b7ac40fba94906ad44c84b6a51e77c9fae8a8}
+  # v0.7.5, the release eugr's prebuilt-flashinfer-current wheels are.
+  flashinfer: {repo: https://github.com/flashinfer-ai/flashinfer.git, ref: 9aa920602276537b27e017a762a71e3437fc7f0d}
+  # v2.32.6-1.
+  nccl: {repo: https://github.com/NVIDIA/nccl.git, ref: ad2d192c1f279aefcaf340f67e07880b65a1116b}
   deepgemm: {repo: https://github.com/deepseek-ai/DeepGEMM.git, ref: a6b593d2826719dcf4892609af7b84ee23aaf32a}
-  torch: {version: "2.13.0", index: https://download.pytorch.org/whl/cu130}
-  torchvision: {version: "0.28.0"}
+  # What eugr's wheels are built against (their Dockerfile's TORCH_VERSION
+  # and friends); a prebuilt wheel on any other torch fails to import.
+  torch: {version: "2.14.0", index: https://download.pytorch.org/whl/cu130}
+  torchvision: {version: "0.29.0"}
   torchaudio: {version: "2.11.0"}
   cutlass_dsl: {version: "4.7.0"}
 
@@ -40,6 +48,14 @@ build_args:
 platform_build_args:
   linux/amd64:
     VLLM_RUNNER: upstream
+    # vLLM main builds its wheels for CUDA 13.2 now (cu132 is the default
+    # variant, and no cu130 wheel is published for a main commit), so the
+    # amd64 half takes that wheel, PyTorch's cu132 torch, and a CUDA 13.2
+    # base whose nvcc matches it for FlashInfer's and Triton's JIT. The
+    # arm64 half stays on cu130, which is what eugr's wheels are.
+    VLLM_WHEEL_VARIANT: cu132
+    TORCH_INDEX: https://download.pytorch.org/whl/cu132
+    BASE_IMAGE: nvidia/cuda:13.2.1-devel-ubuntu24.04
     # What FlashInfer and Triton JIT for at runtime on an x86 host: Ampere,
     # Ada, Hopper, consumer Blackwell. Space-separated, not `;`: the image
     # copies this into FLASHINFER_CUDA_ARCH_LIST, which FlashInfer splits on

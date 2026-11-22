@@ -251,6 +251,7 @@
                 "torchrun",
                 "sglang",
                 "llama-rpc",
+                "tensorfold",
                 "none"
               ]
             },

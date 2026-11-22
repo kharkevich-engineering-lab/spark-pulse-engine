@@ -17,10 +17,10 @@
 # that builds the bundled web UI is dropped: nothing in the control plane
 # serves it, and it is a whole toolchain for a page nobody opens.
 
-ARG BASE_IMAGE=nvidia/cuda:13.0.2-devel-ubuntu24.04
-ARG RUNTIME_IMAGE=nvidia/cuda:13.0.2-runtime-ubuntu24.04
+ARG BASE_IMAGE=nvidia/cuda:13.0.3-devel-ubuntu24.04
+ARG RUNTIME_IMAGE=nvidia/cuda:13.0.3-runtime-ubuntu24.04
 ARG LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git
-ARG LLAMA_CPP_REF=73ab7599b553c03f6f5d2db24a18ad76f2eb36a3
+ARG LLAMA_CPP_REF=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
 #: GB10 is sm_121. Not "all supported archs": on arm64 every other one is dead
 #: weight in a build that exists for one machine. The amd64 build overrides
 #: this with the x86 GPUs it serves.
@@ -67,8 +67,15 @@ RUN git init -q . && \
 # nothing here -- one small backend shared object and one 2 MB binary, neither
 # loaded unless something asks for it -- so the default variant carries it too
 # rather than the build diverging for a flag.
+# `-DLLAMA_USE_PREBUILT_UI=OFF` keeps the web UI out, as above. Since ~b11800
+# the build fetches a prebuilt UI from a Hugging Face bucket by build number
+# instead; a shallow clone has no build number ("b1"), so it falls back to
+# `latest`, whose asset layout a pinned release's checker rejects, failing the
+# build. Off, the server is built with an empty UI table and the API is
+# unchanged.
 RUN cmake -B build \
       -DGGML_NATIVE=OFF \
+      -DLLAMA_USE_PREBUILT_UI=OFF \
       -DGGML_CUDA=ON \
       -DGGML_RPC=ON \
       -DGGML_BACKEND_DL=ON \
