@@ -67,8 +67,15 @@ RUN git init -q . && \
 # nothing here -- one small backend shared object and one 2 MB binary, neither
 # loaded unless something asks for it -- so the default variant carries it too
 # rather than the build diverging for a flag.
+# `-DLLAMA_USE_PREBUILT_UI=OFF` keeps the web UI out, as above. Since ~b11800
+# the build fetches a prebuilt UI from a Hugging Face bucket by build number
+# instead; a shallow clone has no build number ("b1"), so it falls back to
+# `latest`, whose asset layout a pinned release's checker rejects, failing the
+# build. Off, the server is built with an empty UI table and the API is
+# unchanged.
 RUN cmake -B build \
       -DGGML_NATIVE=OFF \
+      -DLLAMA_USE_PREBUILT_UI=OFF \
       -DGGML_CUDA=ON \
       -DGGML_RPC=ON \
       -DGGML_BACKEND_DL=ON \
