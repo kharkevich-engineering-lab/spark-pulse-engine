@@ -4,15 +4,15 @@ variant: default
 description: Modular MAX, the OpenAI-compatible `max serve`, from Modular's own multi-arch image.
 # Modular builds it; `build.external` below.
 image: docker.io/modular/max-nvidia-full
-tag: 26.5.0
-version: 0.1.0
+tag: 26.7.0
+version: 0.2.0
 arch: [linux/arm64]
 gpu_arch: ["12.1a"]
 build: {external: true}
 
 sources:
   max:
-    image: docker.io/modular/max-nvidia-full@sha256:58d6d31d7e43516d4503959cf2d1e3b77f84d657789056204276d141307d52e7
+    image: docker.io/modular/max-nvidia-full@sha256:7f7dc8ad63b2088b5ed4e3343086bcb2f94919051f7f2a5037d7c51a2448150d
 
 runtime:
   workdir: /workspace

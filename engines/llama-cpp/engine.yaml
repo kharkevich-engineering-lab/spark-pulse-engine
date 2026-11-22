@@ -5,7 +5,7 @@ description: >-
   llama.cpp's llama-server, built from source with CUDA 13: sm_121 only on
   arm64 (DGX Spark), and the desktop and datacenter GPUs on amd64.
 image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/llama-cpp
-version: 0.2.0
+version: 0.3.0
 legacy_tags: []
 # One multi-platform image: a node pulls its own platform under the same tag
 # and digest, so a recipe and a deploy name one image for a Spark and an x86
@@ -14,13 +14,14 @@ arch: [linux/arm64, linux/amd64]
 gpu_arch: ["12.1a", "8.0", "8.6", "8.9", "9.0", "12.0"]
 
 sources:
-  base: {image: nvidia/cuda:13.0.2-devel-ubuntu24.04}
-  runtime: {image: nvidia/cuda:13.0.2-runtime-ubuntu24.04}
-  # Tag b10840. llama.cpp tags every build, and those names ("b10840") are not
-  # versions, so the pin is the commit and the tag lives in this comment.
+  base: {image: nvidia/cuda:13.0.3-devel-ubuntu24.04}
+  runtime: {image: nvidia/cuda:13.0.3-runtime-ubuntu24.04}
+  # Release v1.0.0 (build b12359). llama.cpp also tags every build ("b12359"),
+  # and tags can move, so the pin is the commit and the tag lives in this
+  # comment.
   llama_cpp:
     repo: https://github.com/ggml-org/llama.cpp.git
-    ref: 73ab7599b553c03f6f5d2db24a18ad76f2eb36a3
+    ref: b1b770d90d94cad9e9ea5b993bdbc383a522fb28
 
 build_args:
   CUDA_DOCKER_ARCH: 121

@@ -5,7 +5,7 @@ description: >-
   llama.cpp from PrismML's fork, the only build that runs the PQ2_0 and PTQ1_0
   ternary GGUFs (Bonsai 2 27B). Same image as the default variant otherwise.
 image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/llama-cpp-prism
-version: 0.1.1
+version: 0.2.0
 legacy_tags: [llama-cpp-prism]
 arch: [linux/arm64]
 gpu_arch: ["12.1a"]
@@ -15,9 +15,9 @@ gpu_arch: ["12.1a"]
 build: {context: engines/llama-cpp, dockerfile: engines/llama-cpp/Dockerfile}
 
 sources:
-  base: {image: nvidia/cuda:13.0.2-devel-ubuntu24.04}
-  runtime: {image: nvidia/cuda:13.0.2-runtime-ubuntu24.04}
-  # Branch `prism` (the prism-v7 line), head as of 2026-09-20.
+  base: {image: nvidia/cuda:13.0.3-devel-ubuntu24.04}
+  runtime: {image: nvidia/cuda:13.0.3-runtime-ubuntu24.04}
+  # Branch `prism` (the prism-v7 line), head as of 2026-11-20.
   #
   # Why a fork at all: PrismML's ternary packings are not llama.cpp types.
   # Stock llama.cpp rejects PQ2_0 and PTQ1_0 outright as unknown types, and —
@@ -33,7 +33,7 @@ sources:
   # predates the current kernels.
   llama_cpp:
     repo: https://github.com/PrismML-Eng/llama.cpp.git
-    ref: 9a9394a895b96003ca842a6041cb28ac49a108f7
+    ref: d12ca13bb9f2136c8e03bfceccf20b06d115fc52
 
 build_args:
   CUDA_DOCKER_ARCH: 121

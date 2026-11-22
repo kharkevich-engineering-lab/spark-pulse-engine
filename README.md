@@ -20,9 +20,12 @@ build failed fails the merge.
 image is the Spark build: eugr's prebuilt wheels with the patch queue, our
 NCCL, `sm_121`. The amd64 image (`runner-upstream` in the Dockerfile, chosen by
 `VLLM_RUNNER=upstream` in `platform_build_args`) installs upstream's x86_64
-cu130 wheel for the same `VLLM_REF`, with the torch that commit pins, and
-applies no patches: they are GB10/sm12x fixes. `build-metadata.yaml` in the
-image says which one you have.
+wheel for the same `VLLM_REF`, with the torch that commit pins, and applies no
+patches: they are GB10/sm12x fixes. The two halves need not share a CUDA
+minor: vLLM main publishes cu132 wheels only, so the amd64 half is cu132 on a
+CUDA 13.2 base (`VLLM_WHEEL_VARIANT`, `TORCH_INDEX`, `BASE_IMAGE` in
+`platform_build_args`), while eugr's arm64 wheels are cu130. `build-metadata.yaml`
+in the image says which one you have.
 
 Every serving engine that Spark Pulse can run comes from here: a Dockerfile,
 pinned sources, and an `engine.yaml` describing how the control plane should

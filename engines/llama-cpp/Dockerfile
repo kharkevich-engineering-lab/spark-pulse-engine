@@ -17,10 +17,10 @@
 # that builds the bundled web UI is dropped: nothing in the control plane
 # serves it, and it is a whole toolchain for a page nobody opens.
 
-ARG BASE_IMAGE=nvidia/cuda:13.0.2-devel-ubuntu24.04
-ARG RUNTIME_IMAGE=nvidia/cuda:13.0.2-runtime-ubuntu24.04
+ARG BASE_IMAGE=nvidia/cuda:13.0.3-devel-ubuntu24.04
+ARG RUNTIME_IMAGE=nvidia/cuda:13.0.3-runtime-ubuntu24.04
 ARG LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git
-ARG LLAMA_CPP_REF=73ab7599b553c03f6f5d2db24a18ad76f2eb36a3
+ARG LLAMA_CPP_REF=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
 #: GB10 is sm_121. Not "all supported archs": on arm64 every other one is dead
 #: weight in a build that exists for one machine. The amd64 build overrides
 #: this with the x86 GPUs it serves.
