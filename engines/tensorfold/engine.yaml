@@ -1,0 +1,98 @@
+schema_version: "1"
+engine: tensorfold
+variant: default
+description: >-
+  TensorFold's native engine, tensorfold-native, from the upstream Linux
+  aarch64 release with its CUDA kernels built in. Serves Qwen3.8 Flash Next
+  (including NVIDIA's FP4-Local checkpoint) on one GB10, or as two
+  tensor-parallel ranks across two.
+image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/tensorfold
+version: 0.1.0
+arch: [linux/arm64]
+gpu_arch: ["12.1a"]
+
+sources:
+  runtime: {image: nvidia/cuda:13.0.3-runtime-ubuntu24.04}
+  # The release, not a branch: v1.3.3's native archive, whose sha256 is
+  # pinned under build_args below. Upstream publishes no container image,
+  # which is why this repo builds one around the archive.
+  tensorfold:
+    repo: https://github.com/ashhart/TensorFold
+    ref: v1.3.3
+  # Tensor-parallel ranks refuse NCCL older than 2.30.0 before rank setup
+  # (CHANGELOG 1.1.2, #1060). NVIDIA's cu13 wheel, unpacked; see the
+  # Dockerfile. Named `nccl_wheel` so its build arg is NCCL_WHEEL_VERSION:
+  # the CUDA base image already sets ENV NCCL_VERSION, which would win.
+  nccl_wheel: {version: "2.32.6"}
+
+build_args:
+  TENSORFOLD_SHA256: 95e4388aba4af1f41a4f50265fd19f7636fa34007f8392a8723d8b2e1612491c
+
+runtime:
+  workdir: /workspace
+  serve: tensorfold-native serve
+  # A repo id (owner/name) is looked up in the Hugging Face cache under
+  # HF_HOME; the native engine never downloads ("is not in the Hugging Face
+  # cache; the native engine does not download"), which is the right shape
+  # here: the control plane has already put the snapshot on every node.
+  model_arg: positional
+  readiness: /health
+  models_endpoint: /v1/models
+  # Prometheus text, in TensorFold's own names (tensorfold:*). The metrics
+  # sampler reports "unrecognised" rather than an empty chart until it reads
+  # them.
+  metrics: /metrics
+  # `rendezvous` is the --master-port rank zero publishes its store on; the
+  # TCP control link between the ranks then takes an ephemeral port from that
+  # store. 29551 is the port the two-Spark recipes built on this engine use.
+  ports: {api: 8080, rendezvous: 29551}
+  # ~/.cache/tensorfold holds the weight packs Flash Next builds at its first
+  # start (CHANGELOG 1.0.5: "keeps the weight packs it builds at startup
+  # under ~/.cache/tensorfold/packs"). Mounted so the second start on a node
+  # loads them instead of rebuilding.
+  cache_mounts: [~/.cache/huggingface, ~/.cache/tensorfold]
+  env:
+    HF_HOME: /home/spark/.cache/huggingface
+    HF_HUB_OFFLINE: "1"
+  container:
+    privileged: false
+    ipc_host: true
+    network_host: true
+    # The RoCE devices and an unlimited memlock, for NCCL's IB transport over
+    # the ConnectX ports — the same two things the SGLang profile carries and
+    # for the same reason: the engine runs as the operator, and a non-root
+    # process can register pinned memory only under an unlimited memlock.
+    devices: [/dev/infiniband]
+    ulimits: {memlock: "-1"}
+    keepalive: sleep infinity
+  # TensorFold's own two-rank dialect: every rank runs the same serve line
+  # plus `--tp N --rank R --master <rank zero> --master-port <port>`. Rank
+  # zero serves the API; rank one serves no HTTP and follows rank zero's
+  # steps. Only ModelOpt checkpoints take two ranks on CUDA
+  # (cuda_lanes_load.zig refuses `--tp 2` for anything else), and both ranks
+  # must set the same TENSORFOLD_CHECKPOINT_SHA256 — the renderer in
+  # spark-pulse handles both, because they depend on the launch rather than
+  # the image.
+  multi_node:
+    style: tensorfold
+    # With drafts on, two ranks cannot keep prompt snapshots: the engine
+    # refuses to start with "Flash Next tensor-rank MTP snapshots are
+    # unavailable: use --prompt-cache-gib 0 with --tp and drafting". A recipe
+    # that serves --no-drafts may drop this by passing its own value.
+    extra_args: [--prompt-cache-gib, "0"]
+  # No tensor_parallel: the rank count is the topology, rendered as --tp, not
+  # a recipe number. No gpu_memory_utilization: the engine sizes its KV pool
+  # from the memory free after load, less TENSORFOLD_MEMORY_RESERVE_GIB.
+  param_flags:
+    port: --port
+    host: --host
+    max_model_len: --context
+    max_num_seqs: --parallel
+
+# Two nodes are claimed because the engine renders them and upstream ships
+# the path, not because it has been run: upstream calls the ModelOpt
+# two-rank path experimental and has published no measurement of it. The
+# first run on a pair is ours, and lands in `verified`. Three ranks or more
+# is refused by the engine itself (`--tp` takes 1 or 2), so no mesh.
+capabilities: {mods: false, pr_mods: false, solo: true, cluster: true, mesh: false}
+verified: []
