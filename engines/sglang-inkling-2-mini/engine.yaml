@@ -16,7 +16,11 @@ sources:
 runtime:
   python: "3.12"
   workdir: /workspace
-  serve: python3 -m sglang.launch_server
+  # `--enable-metrics` is what makes SGLang serve /metrics at all. It is part of
+  # the launch rather than something a recipe has to remember, because a
+  # metrics path declared below and not served is a panel that says "the engine
+  # publishes nothing" forever.
+  serve: python3 -m sglang.launch_server --enable-metrics
   model_arg: --model-path
   readiness: /health
   models_endpoint: /v1/models
