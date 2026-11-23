@@ -3,7 +3,7 @@ engine: sglang
 variant: inkling-2-mini
 description: SGLang's upstream Inkling 2 Mini image, wrapped with Spark Pulse runtime defaults for DGX Spark.
 image: ghcr.io/kharkevich-engineering-lab/spark-pulse-engine/sglang-inkling-2-mini
-version: 0.1.0
+version: 0.1.1
 legacy_tags: []
 # Inkling 2 Mini's upstream image is verified for DGX Spark. Do not claim an
 # x86 image until that upstream tag is published and tested there too.
@@ -39,9 +39,13 @@ runtime:
     devices: [/dev/infiniband]
     ulimits: {memlock: "-1", stack: "67108864"}
     keepalive: sleep infinity
+  # The generic sglang spec's --enable-dp-attention is not carried over: the
+  # SGLang 1.0 in this image removed it, and rank 0 exits at argument parsing
+  # with "--enable-dp-attention was removed in SGLang 1.0". Plain --tp across
+  # the nodes is what was verified.
   multi_node:
     style: sglang
-    extra_args: [--enable-dp-attention]
+    extra_args: []
   param_flags:
     port: --port
     host: --host
@@ -51,6 +55,7 @@ runtime:
     max_model_len: --context-length
     max_num_seqs: --max-running-requests
 
-capabilities: {mods: false, pr_mods: false, solo: true, cluster: false, mesh: false}
+capabilities: {mods: false, pr_mods: false, solo: true, cluster: true, mesh: false}
 verified:
   - {nodes: 1, tp: 1, model: OpenUncensored/Inkling-2-Mini-Uncensored, date: "2026-11-22", notes: "Tested on a DGX Spark with the dedicated lmsysorg/sglang:inkling-2-mini image."}
+  - {nodes: 2, tp: 2, model: OpenUncensored/Inkling-2-Mini-Uncensored, date: "2026-11-23", notes: "Two DGX Sparks over the ConnectX fabric (RoCE), image digest b3d267a0, SGLang nightly-dev-20261120. 1M context: full KV pool 3.01M tokens. Decode 53 tok/s at 1 stream, 157 total at 8; with --speculative-algorithm DSPARK 72-88 at 1 stream. A 943K-token prompt completed (TTFT 729s)."}
